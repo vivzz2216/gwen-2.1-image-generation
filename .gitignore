@@ -1,0 +1,40 @@
+# Python & Bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyd
+
+# Environments
+.venv/
+venv/
+ENV/
+env/
+
+# Portable ComfyUI & Archives (>100MB / binary builds)
+ComfyUI_windows_portable/
+*.7z
+*.zip
+*.tar.gz
+7zr.exe
+*.whl
+
+# Outputs & Generated Files (Zero-Trace / Privacy)
+outputs/
+*.sqlite3
+*.log
+
+# Model Weights (>100MB / local cache)
+models/
+*.safetensors
+*.pth
+*.pt
+*.bin
+*.ckpt
+*.onnx
+
+# OS & IDE Cache
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp

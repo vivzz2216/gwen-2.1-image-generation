@@ -1,0 +1,8 @@
+# Web runtime only. CUDA and Qwen execution use the bundled ComfyUI environment.
+fastapi
+uvicorn
+python-multipart
+pillow
+numpy
+httpx
+websocket-client==1.9.2
