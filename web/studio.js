@@ -2,7 +2,7 @@
 
 (() => {
   const $ = id => document.getElementById(id);
-  const state = {task: "generate", mode: "balanced", source: null, sourceUrl: null, reference: null, maskReady: false, tool: "paint", undo: [], drawing: false, lastPoint: null, result: null, jobId: null, submitting: false, polling: false, maskBusy: false, history: [], modes: {fast: {resolution: 512, steps: 16}, balanced: {resolution: 768, steps: 28}, ultra: {resolution: 1024, steps: 36}}};
+  const state = {task: "generate", mode: "balanced", source: null, sourceUrl: null, reference: null, maskReady: false, tool: "paint", undo: [], drawing: false, lastPoint: null, result: null, jobId: null, submitting: false, polling: false, maskBusy: false, modes: {fast: {resolution: 512, steps: 16}, balanced: {resolution: 768, steps: 28}, ultra: {resolution: 1024, steps: 36}}};
   const mask = document.createElement("canvas");
   const maskCtx = mask.getContext("2d", {willReadFrequently: true});
   const overlay = $("maskOverlay");
@@ -195,9 +195,9 @@
       while (state.jobId === id) {
         try {
           const job = await api(`/api/jobs/${encodeURIComponent(id)}`); failures = 0; showJob(job);
-          if (["succeeded", "completed"].includes(job.status)) { await displayResult(job.result || job, id); finishJob(); await loadHistory(); break; }
+          if (["succeeded", "completed"].includes(job.status)) { await displayResult(job.result || job, id); finishJob(); break; }
           if (job.status === "failed") { showError(errorText(job), true); finishJob(); break; }
-          if (job.status === "cancelled") { $("outputError").textContent = "The request was cancelled. Your saved images are still available."; $("outputError").hidden = false; finishJob(); break; }
+          if (job.status === "cancelled") { $("outputError").textContent = "The request was cancelled."; $("outputError").hidden = false; finishJob(); break; }
         } catch (error) {
           failures += 1;
           if (failures >= 5) { showError(`Connection lost: ${error.message} Refresh this page to reconnect to the saved job.`, true); $("jobPhase").textContent = "Connection interrupted"; break; }
@@ -258,34 +258,6 @@
     await setSource(new File([blob], `studio-source.${extension}`, {type: blob.type || "image/png"}), safeUrl); chooseTask("edit");
     $("prompt").focus(); $("sourceSection").scrollIntoView({block: "nearest"});
   }
-  async function loadHistory() {
-    $("refreshHistory").disabled = true;
-    try {
-      const response = await api("/api/history"); const items = Array.isArray(response) ? response : response.items || [];
-      state.history = items; $("historyGrid").replaceChildren(); $("historyEmpty").hidden = items.length > 0;
-      for (const item of items.slice(0, 18)) {
-        const savedResult = {...item, ...(item.result || {})};
-        const url = localImageUrl(savedResult.image_url || savedResult.url); if (!url) continue;
-        const card = document.createElement("article"); card.className = "history-item";
-        const imageButton = document.createElement("button"); imageButton.type = "button"; imageButton.className = "history-image"; imageButton.setAttribute("aria-label", "View saved image");
-        const img = document.createElement("img"); img.src = url; img.alt = item.prompt || item.metadata?.prompt || "Saved Qwen image"; img.loading = "lazy"; imageButton.append(img);
-        imageButton.addEventListener("click", () => { clearErrors(); void displayResult(savedResult, item.job_id).catch(error => showError(error.message, true)); });
-        const caption = document.createElement("p"); caption.textContent = item.prompt || item.metadata?.prompt || `${formatMode(item.mode || item.metadata?.mode) || "Qwen"} image`; caption.title = caption.textContent;
-        const toolbar = document.createElement("div"); toolbar.className = "history-toolbar";
-        const edit = document.createElement("button"); edit.type = "button"; edit.className = "text-button"; edit.textContent = "Use as source"; edit.addEventListener("click", () => { clearErrors(); void imageToSource(url).catch(error => showError(error.message)); });
-        const reuse = document.createElement("button"); reuse.type = "button"; reuse.className = "text-button"; reuse.textContent = "Reuse settings"; reuse.addEventListener("click", () => {
-          const data = {...item, ...(item.request || {}), ...(savedResult.metadata || {})};
-          invalidateMask();
-          if (data.mode) chooseMode(data.mode); if (data.prompt) $("prompt").value = data.prompt; if (data.seed !== undefined) $("seed").value = data.seed; if (data.aspect_ratio) $("aspectRatio").value = data.aspect_ratio; $("steps").value = data.steps || ""; $("transparent").checked = !!(data.is_transparent ?? data.transparent);
-          if (data.region) $("editRegion").value = data.region;
-          if (data.preserve !== undefined) $("preserve").checked = data.preserve;
-          refreshMaskTools();
-          chooseTask(data.task === "edit" ? "edit" : "generate"); savePreference(); $("prompt").focus();
-        }); toolbar.append(edit, reuse); card.append(imageButton, caption, toolbar); $("historyGrid").append(card);
-      }
-    } catch (error) { $("historyEmpty").hidden = false; $("historyEmpty").textContent = `Recent images could not be loaded. ${error.message}`; }
-    finally { $("refreshHistory").disabled = false; }
-  }
   function bindUpload(input, drop, callback) {
     async function select(file) { if (!file) return; clearErrors(); try { await callback(file); } catch (error) { showError(error.message); } }
     $(input).addEventListener("change", event => void select(event.target.files[0]));
@@ -305,7 +277,6 @@
   $("preserve").addEventListener("change", () => { if ($("preserve").checked && $("editRegion").value === "global") $("editRegion").value = "manual"; refreshMaskTools(); savePreference(); });
   $("enhancePrompt").addEventListener("click", () => void enhancePrompt());
   $("refreshBackend").addEventListener("click", () => void fetchCapabilities());
-  $("refreshHistory").addEventListener("click", () => void loadHistory());
   $("findMask").addEventListener("click", () => void findMask());
   $("removeSource").addEventListener("click", clearSource);
   bindUpload("sourceInput", "sourceDrop", file => setSource(file));
@@ -330,5 +301,5 @@
     if (saved) { $("prompt").value = saved.prompt || ""; $("aspectRatio").value = saved.aspect_ratio || "1:1"; $("seed").value = saved.seed ?? ""; $("steps").value = saved.num_steps ?? ""; $("preserve").checked = saved.preserve !== false; $("editRegion").value = saved.region || "auto"; $("transparent").checked = !!saved.is_transparent; chooseMode(saved.mode || "balanced"); chooseTask(saved.task || "generate"); }
     const storedJob = localStorage.getItem("qwen-studio-job"); if (storedJob) { state.jobId = storedJob; showJob({status: "running", phase: "Reconnecting"}); updateRun(); void pollJob(storedJob); }
   } catch { /* Settings are a convenience, not a requirement. */ }
-  refreshMaskTools(); void fetchCapabilities(); void loadHistory();
+  refreshMaskTools(); void fetchCapabilities();
 })();
