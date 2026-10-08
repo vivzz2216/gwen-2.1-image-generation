@@ -190,8 +190,51 @@ def compile_prompt(instruction, target="global", preserve=True, transparent=Fals
     return text
 
 
-def query_ollama_enhance(prompt):
-    return prompt.strip() + ". Clear subject definition, coherent composition, detailed textures and lighting consistent with the described scene."
+import urllib.request
+
+OLLAMA_URL = os.getenv("OLLAMA_URL", "http://127.0.0.1:11434").rstrip("/")
+
+
+def query_ollama_enhance(prompt: str) -> str:
+    prompt = prompt.strip()
+    if not prompt:
+        return ""
+
+    try:
+        system_instruction = (
+            "You are an expert prompt engineer for the local Qwen-Image-2.1 diffusion model. "
+            "Transform the following idea into an evocative, highly detailed, photorealistic visual scene prompt. "
+            "Describe the subject, composition, camera lens/angle, lighting, realistic textures, and background ambiance. "
+            "Output ONLY the enhanced visual prompt text. Do not include markdown headers, quotes, or conversational remarks."
+        )
+        payload = {
+            "model": "dolphin-llama3",
+            "prompt": f"{system_instruction}\n\nUser Idea: {prompt}\n\nEnhanced Prompt:",
+            "stream": False,
+            "options": {
+                "temperature": 0.7,
+                "top_p": 0.9,
+                "num_predict": 180,
+                "stop": ["\nUser Idea:", "\n\nIdea:", "---"]
+            }
+        }
+        req = urllib.request.Request(
+            f"{OLLAMA_URL}/api/generate",
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json"}
+        )
+        with urllib.request.urlopen(req, timeout=45) as resp:
+            if resp.status == 200:
+                data = json.loads(resp.read().decode("utf-8"))
+                enhanced = str(data.get("response", "")).strip()
+                if enhanced:
+                    if (enhanced.startswith('"') and enhanced.endswith('"')) or (enhanced.startswith("'") and enhanced.endswith("'")):
+                        enhanced = enhanced[1:-1].strip()
+                    return enhanced
+    except Exception:
+        pass
+
+    return prompt + ". Clear subject definition, coherent composition, detailed textures and lighting consistent with the described scene."
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -207,7 +250,23 @@ def capabilities():
                    "ram_free": stats.get("system", {}).get("ram_free"), "url": COMFY_URL}
     except Exception:
         backend = {"status": "offline", "url": COMFY_URL, "message": "Start run_qwen_comfyui.bat"}
-    return {"modes": engine.mode_info(), "backend": backend, "segmentation": regions.segmenter_status(),
+
+    enhancer = {"status": "offline", "model": "dolphin-llama3", "installed": False, "url": OLLAMA_URL}
+    try:
+        with urllib.request.urlopen(f"{OLLAMA_URL}/api/tags", timeout=1) as resp:
+            if resp.status == 200:
+                models = [m.get("name", "") for m in json.loads(resp.read().decode("utf-8")).get("models", [])]
+                has_dolphin = any("dolphin-llama3" in m for m in models)
+                enhancer = {
+                    "status": "ready" if has_dolphin else "model_missing",
+                    "model": "dolphin-llama3",
+                    "installed": has_dolphin,
+                    "url": OLLAMA_URL
+                }
+    except Exception:
+        pass
+
+    return {"modes": engine.mode_info(), "backend": backend, "enhancer": enhancer, "segmentation": regions.segmenter_status(),
             "max_reference_images": 3, "max_upload_mb": 25}
 
 

@@ -1,5 +1,6 @@
 """Start/reuse the bundled local Qwen backend and the Studio on Windows."""
 import os
+import shutil
 import subprocess
 import sys
 import threading
@@ -20,8 +21,27 @@ def reachable(url):
         return False
 
 
+def ensure_ollama():
+    if reachable("http://127.0.0.1:11434/api/tags"):
+        return
+    ollama_path = shutil.which("ollama")
+    if not ollama_path:
+        local_app_data = os.environ.get("LOCALAPPDATA", "")
+        candidate = Path(local_app_data) / "Programs" / "Ollama" / "ollama.exe"
+        if candidate.exists():
+            ollama_path = str(candidate)
+    if ollama_path and Path(ollama_path).exists():
+        print("Starting Ollama background service for Dolphin-Llama3 prompt enhancer...", flush=True)
+        subprocess.Popen([ollama_path, "serve"], creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
+        for _ in range(15):
+            if reachable("http://127.0.0.1:11434/api/tags"):
+                print("Ollama enhancer is ready: http://localhost:11434", flush=True)
+                return
+            time.sleep(0.5)
+
+
 def main():
-    print("[1/2] Checking ComfyUI backend (http://127.0.0.1:8188)...", flush=True)
+    print("[1/3] Checking ComfyUI backend (http://127.0.0.1:8188)...", flush=True)
     if not reachable("http://127.0.0.1:8188/system_stats"):
         python = PORTABLE / "python_embeded" / "python.exe"
         models = PORTABLE / "ComfyUI" / "models"
@@ -46,15 +66,19 @@ def main():
             if time.monotonic() > deadline:
                 raise RuntimeError("ComfyUI is taking longer than five minutes. Check its log, then rerun this launcher.")
             time.sleep(2)
-    print("[1/2] Qwen backend is ready: http://localhost:8188", flush=True)
+    print("[1/3] Qwen backend is ready: http://localhost:8188", flush=True)
+
+    print("[2/3] Checking Ollama prompt enhancer (http://127.0.0.1:11434)...", flush=True)
+    ensure_ollama()
+    print("[2/3] Dolphin-Llama3 prompt enhancer is active.", flush=True)
 
     if reachable("http://127.0.0.1:7860/api/capabilities"):
-        print("[2/2] Studio is already running: http://localhost:7860", flush=True)
+        print("[3/3] Studio is already running: http://localhost:7860", flush=True)
         print("Opening browser at http://localhost:7860...", flush=True)
         webbrowser.open("http://localhost:7860")
         return
 
-    print("[2/2] Starting Studio web server on http://localhost:7860...", flush=True)
+    print("[3/3] Starting Studio web server on http://localhost:7860...", flush=True)
     print("Opening browser at http://localhost:7860. Keep this window open; Ctrl+C stops the Studio.", flush=True)
 
     def open_browser():
