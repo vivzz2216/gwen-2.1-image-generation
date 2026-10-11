@@ -10,7 +10,8 @@ from PIL import Image
 
 from qwen_engine import (
     ComfyClient, GenerationCancelled, ImageGenerationError, MODES,
-    build_edit, build_generation, generation_dimensions, image_dimensions,
+    build_edit, build_generation, build_workflow, generation_dimensions, image_dimensions,
+    LORA_NAME,
 )
 
 
@@ -18,6 +19,24 @@ PROMPT_ID = "00000000-0000-4000-8000-000000000001"
 
 
 class WorkflowTests(unittest.TestCase):
+    def test_lora_workflow_patches_model_when_enabled(self):
+        workflow = build_workflow("test scene", lora_name=LORA_NAME, lora_strength=0.8)
+        self.assertIn("1b", workflow)
+        self.assertEqual(workflow["1b"]["class_type"], "LoraLoaderModelOnly")
+        self.assertEqual(workflow["1b"]["inputs"]["lora_name"], LORA_NAME)
+        self.assertEqual(workflow["1b"]["inputs"]["strength_model"], 0.8)
+        self.assertEqual(workflow["1b"]["inputs"]["model"], ["1", 0])
+        self.assertEqual(workflow["2"]["inputs"]["model"], ["1b", 0])
+
+    def test_lora_workflow_unmodified_when_disabled(self):
+        wf_none = build_workflow("test scene", lora_name=None)
+        self.assertNotIn("1b", wf_none)
+        self.assertEqual(wf_none["2"]["inputs"]["model"], ["1", 0])
+
+        wf_zero = build_workflow("test scene", lora_name=LORA_NAME, lora_strength=0.0)
+        self.assertNotIn("1b", wf_zero)
+        self.assertEqual(wf_zero["2"]["inputs"]["model"], ["1", 0])
+
     def test_modes_change_native_work_and_memory(self):
         profiles = [build_generation("a copper robot", mode) for mode in MODES]
         self.assertEqual([p["6"]["inputs"]["width"] for p in profiles], [512, 768, 1024])

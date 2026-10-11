@@ -31,7 +31,7 @@ def ensure_ollama():
         if candidate.exists():
             ollama_path = str(candidate)
     if ollama_path and Path(ollama_path).exists():
-        print("Starting Ollama background service for Dolphin-Llama3 prompt enhancer...", flush=True)
+        print("Starting Ollama background service for the Qwen Dolphin prompt enhancer...", flush=True)
         subprocess.Popen([ollama_path, "serve"], creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
         for _ in range(15):
             if reachable("http://127.0.0.1:11434/api/tags"):
@@ -54,11 +54,14 @@ def main():
             raise RuntimeError("The bundled Qwen/ComfyUI installation is missing. Restore its models before starting.")
         print("Starting local Qwen Image 2.1 on the NVIDIA GPU. First startup can take several minutes...", flush=True)
         with (PORTABLE / "qwen_comfyui.stdout.log").open("a") as stdout, (PORTABLE / "qwen_comfyui.stderr.log").open("a") as stderr:
-            process = subprocess.Popen([
+            comfy_args = [
                 str(python), "-s", "ComfyUI/main.py", "--windows-standalone-build",
-                "--listen", "127.0.0.1", "--port", "8188", "--lowvram", "--cpu-vae", "--disable-metadata",
+                "--listen", "127.0.0.1", "--port", "8188", "--lowvram", "--disable-metadata",
                 "--preview-method", "none", "--reserve-vram", "1.0"
-            ], cwd=PORTABLE, stdout=stdout, stderr=stderr, creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
+            ]
+            if os.getenv("QWEN_CPU_VAE") == "1":
+                comfy_args.append("--cpu-vae")
+            process = subprocess.Popen(comfy_args, cwd=PORTABLE, stdout=stdout, stderr=stderr, creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
         deadline = time.monotonic() + 300
         while not reachable("http://127.0.0.1:8188/system_stats"):
             if process.poll() is not None:
@@ -70,7 +73,7 @@ def main():
 
     print("[2/3] Checking Ollama prompt enhancer (http://127.0.0.1:11434)...", flush=True)
     ensure_ollama()
-    print("[2/3] Dolphin-Llama3 prompt enhancer is active.", flush=True)
+    print("[2/3] Ollama service checked. Studio will report whether qwen21-dolphin is installed.", flush=True)
 
     if reachable("http://127.0.0.1:7860/api/capabilities"):
         print("[3/3] Studio is already running: http://localhost:7860", flush=True)

@@ -40,11 +40,23 @@ class JobTests(unittest.TestCase):
         self.temp.cleanup()
 
     @patch.object(service.EXECUTOR, "submit")
-    def test_protected_edit_rejects_missing_reviewed_mask(self, submit):
+    @patch.object(service.regions, "propose_mask")
+    def test_protected_edit_auto_masks_when_mask_missing(self, propose_mask, submit):
+        from editing_regions import MaskProposal
+        propose_mask.return_value = MaskProposal(
+            mask=Image.new("L", (128, 128), 255),
+            target="upper_clothes",
+            confidence=0.95,
+            method="segformer"
+        )
         response = self.client.post("/api/jobs", data={"task": "edit", "prompt": "change shirt", "preserve": "true"},
                                     files={"image": ("source.png", bitmap(), "image/png")})
-        self.assertEqual(response.status_code, 422)
-        submit.assert_not_called()
+        self.assertEqual(response.status_code, 202)
+        submit.assert_called_once()
+        job_id = response.json()["job_id"]
+        job = service.get_job(job_id)
+        self.assertIsNotNone(job["request"]["mask_path"])
+        service.CANCEL_EVENTS.pop(job_id, None)
 
     @patch.object(service.EXECUTOR, "submit")
     def test_queue_cancel_and_persistent_history(self, submit):
@@ -84,6 +96,100 @@ class JobTests(unittest.TestCase):
         background = service.compile_prompt("replace background", target="background")
         self.assertNotIn(", hairstyle", hair)
         self.assertNotIn("background and surroundings", background)
+
+    @patch.object(service.EXECUTOR, "submit")
+    @patch.object(service.regions, "propose_mask")
+    def test_auto_pose_edit_does_not_use_an_outfit_mask(self, propose, submit):
+        response = self.client.post("/api/jobs", data={"task": "edit", "prompt": "Raise my left arm while wearing a suit", "region": "auto"},
+                                    files={"image": ("source.png", bitmap(), "image/png")})
+        self.assertEqual(response.status_code, 202)
+        job_id = response.json()["job_id"]
+        job = service.get_job(job_id)
+        self.assertEqual(job["request"]["region"], "global")
+        self.assertTrue(job["request"]["preserve"])
+        self.assertIsNone(job["request"]["mask_path"])
+        propose.assert_not_called()
+        service.CANCEL_EVENTS.pop(job_id, None)
+        service.ACTIVE_PROMPTS.pop(job_id, None)
+
+    @patch.object(service.EXECUTOR, "submit")
+    def test_explicit_clothing_region_cannot_silently_clip_a_kick(self, submit):
+        response = self.client.post("/api/jobs", data={"task": "edit", "prompt": "Make me kick the other player's chest", "region": "outfit"},
+                                    files={"image": ("source.png", bitmap(), "image/png")})
+        self.assertEqual(response.status_code, 422)
+        self.assertIn("Global edit", response.json()["detail"])
+        submit.assert_not_called()
+
+    @patch.object(service.EXECUTOR, "submit")
+    def test_batch_submission_and_status(self, submit):
+        import json
+        prompts = ["a majestic lion", "a playful otter", "a soaring eagle"]
+        response = self.client.post("/api/jobs/batch", data={"prompts": json.dumps(prompts), "mode": "fast"})
+        self.assertEqual(response.status_code, 202)
+        data = response.json()
+        self.assertEqual(data["total"], 3)
+        self.assertEqual(len(data["job_ids"]), 3)
+        self.assertEqual(submit.call_count, 3)
+
+        batch_id = data["batch_id"]
+        status_resp = self.client.get(f"/api/batches/{batch_id}")
+        self.assertEqual(status_resp.status_code, 200)
+        batch_data = status_resp.json()
+        self.assertEqual(batch_data["total"], 3)
+        self.assertEqual(len(batch_data["jobs"]), 3)
+        for job in batch_data["jobs"]:
+            self.assertEqual(job["prompt"], "[Protected]")
+            self.assertEqual(job["status"], "queued")
+            service.CANCEL_EVENTS.pop(job["job_id"], None)
+
+    @patch.object(service.EXECUTOR, "submit")
+    def test_batch_validation_limits(self, submit):
+        import json
+        # Over 5 prompts rejected
+        too_many = json.dumps([f"prompt {i}" for i in range(6)])
+        resp = self.client.post("/api/jobs/batch", data={"prompts": too_many})
+        self.assertEqual(resp.status_code, 422)
+        submit.assert_not_called()
+
+        # Zero prompts rejected
+        empty = json.dumps([])
+        resp = self.client.post("/api/jobs/batch", data={"prompts": empty})
+        self.assertEqual(resp.status_code, 422)
+
+    @patch.object(service.EXECUTOR, "submit")
+    def test_batch_cancel(self, submit):
+        import json
+        prompts = ["scene 1", "scene 2"]
+        response = self.client.post("/api/jobs/batch", data={"prompts": json.dumps(prompts), "mode": "balanced"})
+        self.assertEqual(response.status_code, 202)
+        batch_id = response.json()["batch_id"]
+
+        cancel_resp = self.client.post(f"/api/batches/{batch_id}/cancel")
+        self.assertEqual(cancel_resp.status_code, 200)
+        batch_data = cancel_resp.json()
+        self.assertEqual(batch_data["overall_status"], "cancelled")
+        for job in batch_data["jobs"]:
+            self.assertEqual(job["status"], "cancelled")
+            service.CANCEL_EVENTS.pop(job["job_id"], None)
+
+
+    @patch.object(service.EXECUTOR, "submit")
+    def test_batch_edit_mode(self, submit):
+        import json
+        prompts = ["change shirt to red", "change shirt to green"]
+        response = self.client.post("/api/jobs/batch", data={
+            "task": "edit", "prompts": json.dumps(prompts), "mode": "ultra",
+            "preserve": "true", "region": "manual", "num_steps": "2"
+        }, files={
+            "image": ("source.png", bitmap(), "image/png"),
+            "mask": ("mask.png", bitmap("black", mask=True), "image/png")
+        })
+        self.assertEqual(response.status_code, 202)
+        data = response.json()
+        self.assertEqual(data["total"], 2)
+        self.assertEqual(submit.call_count, 2)
+        for jid in data["job_ids"]:
+            service.CANCEL_EVENTS.pop(jid, None)
 
 
 if __name__ == "__main__":

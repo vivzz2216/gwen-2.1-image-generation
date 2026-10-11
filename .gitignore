@@ -11,6 +11,7 @@ ENV/
 env/
 
 # Portable ComfyUI & Archives (>100MB / binary builds)
+qwen-2.1-portable/
 ComfyUI_windows_portable/
 *.7z
 *.zip

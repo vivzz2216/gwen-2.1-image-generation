@@ -5,18 +5,36 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="color-scheme" content="dark">
   <title>Qwen Image 2.1 Studio</title>
-  <link rel="stylesheet" href="/web/studio.css">
-  <script src="/web/studio.js" defer></script>
+  <link rel="icon" type="image/x-icon" href="/web/favicon.ico">
+  <link rel="shortcut icon" href="/web/favicon.ico">
+  <link rel="stylesheet" href="/web/studio.css?v=prompt-cleanup-v1">
+  <link rel="stylesheet" href="/web/layout.css?v=pose-assist-description-1">
+  <script src="/web/studio.js?v=pose-assist-description-1" defer></script>
 </head>
 <body>
   <header class="app-header">
-    <a class="brand" href="/" aria-label="Qwen Image Studio home"><svg viewBox="0 0 32 32" aria-hidden="true"><path d="M5 8h16v16H5zM11 4h16v16M11 14l5-4 9 10M7 21l7-7 7 8"/></svg><span>Qwen Image <strong>2.1</strong><small>Local studio</small></span></a>
-    <div class="header-tools"><span id="backendStatus" class="backend-status">Checking backend…</span><button id="refreshBackend" class="text-button" type="button">Refresh</button><a class="comfy-link" href="http://localhost:8188" target="_blank" rel="noopener">Open ComfyUI <span aria-hidden="true">↗</span></a></div>
+    <a class="brand" href="/" aria-label="Qwen Image Studio home">
+      <img src="/assets/qwen_icon.png" class="brand-icon qwen-brand-logo" alt="Qwen" width="30" height="30">
+      <span>Qwen Image <strong>2.1</strong><small>Windows Desktop Studio</small></span>
+    </a>
+    <div class="header-tools">
+      <div id="hardwareStats" class="hardware-stats">
+        <span id="gpuStatBadge" class="hw-badge" hidden><span class="hw-dot"></span><span id="gpuStatText">GPU</span></span>
+        <span id="ramStatBadge" class="hw-badge hw-badge-secondary" hidden><span id="ramStatText">RAM</span></span>
+      </div>
+      <span id="backendStatus" class="backend-status">Checking backend…</span>
+      <button id="openOutputsFolder" class="header-action-button" type="button" title="Open Outputs Folder in Windows File Explorer (Ctrl+Shift+O)">
+        <svg viewBox="0 0 24 24" aria-hidden="true" width="13" height="13"><path d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"/></svg>
+        <span>Outputs</span>
+      </button>
+      <button id="refreshBackend" class="text-button" type="button">Refresh</button>
+      <a class="comfy-link" href="http://localhost:8188" target="_blank" rel="noopener">ComfyUI <span aria-hidden="true">↗</span></a>
+    </div>
   </header>
   <main class="studio-layout">
     <section class="controls" aria-label="Studio controls">
       <div class="task-tabs" role="tablist" aria-label="Workflow"><button id="createTab" class="task-tab selected" type="button" role="tab" aria-selected="true" aria-controls="controlBody" data-task="generate">Create image</button><button id="editTab" class="task-tab" type="button" role="tab" aria-selected="false" aria-controls="controlBody" data-task="edit">Edit image</button></div>
-      <form id="studioForm" novalidate>
+      <form id="studioForm" novalidate autocomplete="off">
         <div id="controlBody" class="control-body" role="tabpanel" aria-labelledby="createTab">
           <div id="sourceSection" class="edit-only" hidden>
             <div class="label-row"><label for="sourceInput">Original image</label><button id="removeSource" type="button" class="text-button" hidden>Remove</button></div>
@@ -27,32 +45,111 @@
             </div>
           </div>
           <div class="prompt-section">
-            <div class="label-row"><label id="promptLabel" for="prompt">Describe your image</label><button id="enhancePrompt" class="text-button" type="button">Enhance prompt</button></div>
-            <textarea id="prompt" rows="5" maxlength="4000" required placeholder="A cinematic portrait in warm evening light, rich natural colors and fine detail…" aria-describedby="promptHint"></textarea>
+            <div class="label-row">
+              <label id="promptLabel" for="prompt">Describe your image</label>
+              <div class="prompt-header-actions">
+                <div class="enhancer-selector" id="enhancerSelector" role="group" aria-label="Enhancer model selection" title="Choose which model enhances your prompts">
+                  <span class="enhancer-selector-label">Enhance:</span>
+                  <button type="button" id="enhancerDolphinBtn" class="enhancer-toggle-btn active" data-enhancer="dolphin" title="Enhance prompts with Dolphin (Creative, detailed rewrite)">🐬 Dolphin</button>
+                  <button type="button" id="enhancerQwenBtn" class="enhancer-toggle-btn" data-enhancer="qwen" title="Expand existing subjects and actions into a Qwen-ready description without choosing a new style">🧠 Qwen</button>
+                </div>
+                <button id="clearAllPromptsBtn" class="text-button" type="button" title="Clear all prompts">Clear all</button>
+                <button id="enhanceAllBtn" class="text-button" type="button" title="Enhance all entered prompts using the local prompt enhancer">Enhance all</button>
+                <button id="undoEnhanceAllBtn" class="text-button" type="button" hidden>Undo all</button>
+              </div>
+            </div>
+            <p id="enhanceAllStatus" class="hint" role="status" hidden></p>
+            <div id="promptsList" class="prompts-list" role="list" aria-label="List of prompts">
+              <!-- Cards dynamically managed by studio.js -->
+              <div class="prompt-card" data-index="0" role="listitem">
+                <div class="prompt-card-header">
+                  <span class="prompt-card-label">Prompt 1</span>
+                  <div class="prompt-card-tools">
+                    <button type="button" class="text-button card-enhance-btn" data-action="enhance">Enhance</button>
+                    <button type="button" class="text-button card-alt-enhance-btn" data-action="alt-enhance" title="Enhance with alternate model">or Qwen</button>
+                    <button type="button" class="text-button card-undo-btn" data-action="undo" hidden>Undo</button>
+                    <button type="button" class="text-button card-clear-btn" data-action="clear" title="Clear prompt 1">Clear</button>
+                    <button type="button" class="text-button card-remove-btn" data-action="remove" hidden aria-label="Remove prompt 1">Remove</button>
+                  </div>
+                </div>
+                <textarea id="prompt" class="prompt-textarea" rows="4" maxlength="4000" required placeholder="A cinematic portrait in warm evening light, rich natural colors and fine detail…" aria-describedby="promptHint" autocomplete="off" spellcheck="false"></textarea>
+                <p class="card-status hint" role="status" hidden></p>
+              </div>
+            </div>
+            <div class="prompt-list-controls">
+              <button id="addPromptBtn" class="secondary small-button" type="button">
+                <svg viewBox="0 0 24 24" aria-hidden="true" width="16" height="16"><path d="M12 5v14M5 12h14"/></svg><span>Add prompt (<span id="promptCount">1</span>/5)</span>
+              </button>
+            </div>
             <p id="promptHint" class="hint">Be specific about the subject, scene, lighting and style.</p>
+            <p id="actionUnderstandingStatus" class="hint" role="status">Checking action and body-part support…</p>
             <div id="styleChips" class="chips" aria-label="Prompt styles"><button type="button" data-style="photorealistic, natural cinematic lighting, detailed textures">Photo</button><button type="button" data-style="anime illustration, vibrant colors, detailed environment">Anime</button><button type="button" data-style="cyberpunk atmosphere, neon reflections, volumetric light">Cyberpunk</button><button type="button" data-style="cute 3D character, soft studio lighting, clay textures">3D</button><button id="stickerPreset" type="button">RGBA sticker</button></div>
             <div id="editChips" class="chips edit-only" hidden aria-label="Editing examples"><button type="button" data-example="Change my outfit to a black suit. Keep my face, pose, hands and background unchanged.">Black suit</button><button type="button" data-example="Add sunglasses to me. Keep everything else unchanged.">Sunglasses</button><button type="button" data-example="Replace my shoes with white sneakers. Keep everything else unchanged.">Shoes</button><button type="button" data-example="Add a delicate gold necklace. Keep my face and clothing unchanged.">Necklace</button><button type="button" data-example="Change my hairstyle. Keep my facial features, pose and background unchanged.">Hair</button></div>
           </div>
           <div id="editControls" class="edit-only edit-controls" hidden>
             <label class="check-row"><input id="preserve" type="checkbox" checked><span>Protect areas outside the edit mask<small>Copies untouched pixels from your original image.</small></span></label>
-            <label for="editRegion">Area to change</label><select id="editRegion"><option value="auto">Detect from instruction</option><option value="outfit">Outfit</option><option value="top">Top / shirt</option><option value="shoes">Shoes</option><option value="eyewear">Eyewear</option><option value="necklace">Necklace</option><option value="hair">Hair</option><option value="background">Background</option><option value="manual">Paint a custom area</option><option value="global">Whole image</option></select>
-            <div id="maskControls">
-              <button id="findMask" type="button" class="secondary full-width">Find edit area</button>
-              <p id="maskMessage" class="hint">Review the suggested area before editing. For new accessories, paint the area where they should appear.</p>
-              <div id="brushTools" hidden>
-                <div class="brush-actions" aria-label="Mask tools"><button id="paintTool" type="button" class="small-button selected" aria-pressed="true">Paint</button><button id="eraseTool" type="button" class="small-button" aria-pressed="false">Erase</button><button id="undoMask" type="button" class="small-button">Undo</button><button id="clearMask" type="button" class="small-button">Clear</button></div>
-                <label class="brush-label" for="brushSize">Brush size <output id="brushValue">5%</output></label><input id="brushSize" type="range" min="1" max="20" value="5">
-                <div class="label-row"><label class="mask-upload" for="maskInput">Upload mask PNG</label><input id="maskInput" class="sr-only" type="file" accept="image/png"><button id="acceptMask" type="button" class="secondary">Use reviewed mask</button></div>
-                <p class="hint">White mask pixels allow changes; black pixels are protected. Brush input works with mouse, pen or touch.</p>
+            <label for="editRegion">Area to change</label>
+            <select id="editRegion">
+              <option value="auto">Detect from instruction (Automatic)</option>
+              <option value="outfit">Outfit / Clothes</option>
+              <option value="top">Top / Shirt / Jacket</option>
+              <option value="shoes">Shoes / Footwear</option>
+              <option value="eyewear">Eyewear / Sunglasses</option>
+              <option value="necklace">Necklace / Pendant</option>
+              <option value="hair">Hair / Hairstyle</option>
+              <option value="background">Background</option>
+              <option value="manual">Paint a custom area</option>
+              <option value="global">Whole image (Global edit)</option>
+            </select>
+            <p id="maskMessage" class="hint">Auto detects supported clothes/accessory areas. Movement edits use the whole image; exact outside-pixel preservation requires a reviewed mask.</p>
+            <div id="repairControls" hidden><label for="repairKind">Repair target</label><select id="repairKind"><option value="hand">Hand / wrist</option><option value="leg">Leg / foot</option><option value="contact">Interaction / contact</option></select><p id="repairHint" class="hint">Paint the defect and enough connected joint/context. Review the mask before submitting one repair.</p><button id="cancelRepair" type="button" class="text-button">Leave repair mode</button></div>
+            <details id="manualMaskDetails" class="manual-mask-details">
+              <summary>Manual mask adjustments <span class="muted">optional override</span></summary>
+              <div id="maskControls">
+                <button id="findMask" type="button" class="secondary full-width">Preview auto edit area</button>
+                <div id="brushTools">
+                  <div class="brush-actions" aria-label="Mask tools">
+                    <button id="paintTool" type="button" class="small-button selected" aria-pressed="true">Paint</button>
+                    <button id="eraseTool" type="button" class="small-button" aria-pressed="false">Erase</button>
+                    <button id="undoMask" type="button" class="small-button">Undo</button>
+                    <button id="clearMask" type="button" class="small-button">Clear</button>
+                  </div>
+                  <label class="brush-label" for="brushSize">Brush size <output id="brushValue">5%</output></label>
+                  <input id="brushSize" type="range" min="1" max="20" value="5">
+                  <div class="label-row">
+                    <label class="mask-upload" for="maskInput">Upload mask PNG</label>
+                    <input id="maskInput" class="sr-only" type="file" accept="image/png">
+                    <button id="acceptMask" type="button" class="secondary">Use manual mask</button>
+                  </div>
+                  <p class="hint">White = change; black = preserve original. Paint directly with mouse or touch.</p>
+                </div>
+                <p id="maskAccepted" class="success-text" hidden>Manual mask active. It will override automatic detection.</p>
               </div>
-              <p id="maskAccepted" class="success-text" hidden>Reviewed mask ready. Areas outside it will be preserved.</p>
-            </div>
+            </details>
             <details><summary>Reference image <span class="muted">optional</span></summary><p class="hint">Add a clothing, accessory or appearance reference. Describe how it should be used in your instruction.</p><label id="referenceDrop" class="upload-zone compact" for="referenceInput"><span id="referenceFileLabel">Choose reference image</span></label><input id="referenceInput" class="sr-only" type="file" accept="image/png,image/jpeg,image/webp"><button id="removeReference" type="button" class="text-button" hidden>Remove reference</button></details>
           </div>
           <fieldset class="mode-fieldset"><legend>Generation mode</legend><div class="mode-buttons"><button type="button" data-mode="fast" aria-pressed="false"><strong>Fast</strong><span id="fastSpec">512 · 16 steps</span></button><button type="button" class="selected" data-mode="balanced" aria-pressed="true"><strong>Balanced</strong><span id="balancedSpec">768 · 28 steps</span></button><button type="button" data-mode="ultra" aria-pressed="false"><strong>Ultra</strong><span id="ultraSpec">1024 · 36 steps</span></button></div><p id="modeDescription" class="hint">A higher resolution pass for a strong balance of detail and resource use.</p></fieldset>
-          <div class="generation-settings"><label for="aspectRatio">Aspect ratio</label><select id="aspectRatio"><option value="1:1">Square · 1:1</option><option value="16:9">Landscape · 16:9</option><option value="9:16">Portrait · 9:16</option><option value="4:3">Standard · 4:3</option><option value="3:2">Classic · 3:2</option></select></div>
+          <div class="generation-settings"><label for="aspectRatio">Aspect ratio</label><select id="aspectRatio"><option value="1:1">Square · 1:1</option><option value="16:9">Landscape · 16:9</option><option value="9:16">Portrait · 9:16</option><option value="4:3">Standard · 4:3</option><option value="3:4">Standard portrait · 3:4</option><option value="3:2">Classic · 3:2</option><option value="2:3">Classic portrait · 2:3</option></select></div>
           <label class="check-row"><input id="transparent" type="checkbox"><span>Transparent background<small>Request native RGBA output.</small></span></label>
-          <details class="advanced"><summary>Advanced settings</summary><div class="settings-grid"><div><label for="seed">Seed</label><input id="seed" type="number" min="0" max="9007199254740991" step="1" placeholder="Random"><p class="hint">Keep the same seed to compare changes.</p></div><div><label for="steps">Steps override</label><input id="steps" type="number" min="1" max="100" step="1" placeholder="Mode default"><p class="hint">More steps increase processing time.</p></div></div></details>
+          <label class="check-row"><input id="loraToggle" type="checkbox" checked><span>NSFW Prompt Fidelity (TheseAlpacas V2)<small>Enables anatomy, positioning & interaction fine-tuning.</small></span></label>
+          <div id="loraStrengthContainer" class="lora-slider-row">
+            <div class="label-row"><label for="loraStrength">LoRA Strength</label><span id="loraStrengthVal" class="muted">0.80</span></div>
+            <input id="loraStrength" type="range" min="0" max="1.5" step="0.05" value="0.80">
+          </div>
+          <details id="poseAssistDetails" class="advanced"><summary>Pose Assist <span class="muted">optional visual guidance</span></summary>
+            <label class="check-row"><input id="poseEnabled" type="checkbox"><span>Use a reviewed pose reference<small>Native Qwen image guidance; not a guarantee of correct anatomy.</small></span></label>
+            <div id="poseControls" hidden>
+              <label id="poseDrop" class="upload-zone compact" for="poseInput"><span id="poseFileLabel">Choose pose photograph or skeleton PNG</span></label>
+              <input id="poseInput" class="sr-only" type="file" accept="image/png,image/jpeg,image/webp">
+              <img id="posePreview" class="pose-preview" alt="Pose reference to review before generation" hidden>
+              <a id="poseOpen" class="text-button" target="_blank" rel="noopener" hidden>Open full-size pose reference</a>
+              <button id="removePose" type="button" class="text-button" hidden>Remove pose reference</button>
+              <label for="poseOrder">Subject assignment</label><select id="poseOrder"><option value="same">Same subject order as the reference</option><option value="swap">Swap the two subjects (two-person references only)</option></select>
+              <label class="check-row"><input id="poseReviewed" type="checkbox"><span>I reviewed the pose and subject assignment<small>Check joints, contact and overlapping people. Pose changes may change the background.</small></span></label>
+              <p id="poseAvailability" class="hint">Prefer a photograph for overlapping people and contact. Skeleton uploads are experimental and may miss pose, identity or clothing instructions. Automatic DWPose extraction and heavy ControlNet are not enabled.</p>
+            </div>
+          </details>
+          <details class="advanced"><summary>Advanced settings</summary><div class="settings-grid"><div><label for="seed">Seed</label><input id="seed" type="number" min="0" max="9007199254740991" step="1" placeholder="Random"><p class="hint">Keep the same seed to compare changes.</p></div><div><label for="steps">Steps override</label><input id="steps" type="number" min="1" max="100" step="1" placeholder="Mode default"><p class="hint">More steps increase processing time.</p></div></div><label for="enhancementStyle">Enhance behavior</label><select id="enhancementStyle"><option value="describe">Qwen description · expand existing ideas</option><option value="polish">Polish only · grammar and clarity</option></select><p class="hint">Neither mode selects an unrequested style. Review descriptive additions before generating.</p></details>
           <div id="formError" class="notice error" role="alert" hidden></div>
         </div>
         <div class="run-bar"><button id="runButton" type="submit" class="primary"><span id="runLabel">Generate · Balanced</span><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14m-5-5 5 5-5 5"/></svg></button><p class="run-hint">Runs on your local NVIDIA GPU. Processing time varies.</p></div>
@@ -60,15 +157,68 @@
     </section>
     <section class="output-workspace" aria-label="Image output">
       <div class="workspace-heading"><h1 id="workspaceTitle">Your image starts here.</h1><span id="resultSize" class="muted"></span></div>
-      <div id="jobPanel" class="job-panel" aria-live="polite" hidden><div class="job-top"><div><strong id="jobPhase">Queued</strong><p id="jobDetail">Waiting for the local model…</p></div><button id="cancelJob" type="button" class="secondary">Cancel</button></div><progress id="jobProgress" aria-label="Generation progress"></progress><p id="jobElapsed" class="hint">The first run can take longer while models load.</p></div>
+      <div id="jobPanel" class="job-panel" aria-live="polite" hidden>
+        <div class="job-top">
+          <div>
+            <strong id="jobPhase">Queued</strong>
+            <p id="jobDetail">Waiting for the local model…</p>
+          </div>
+          <button id="cancelJob" type="button" class="secondary">Cancel</button>
+        </div>
+        <div id="batchProgressRow" class="batch-progress-row" hidden>
+          <span id="batchStepBadge" class="batch-badge">Image 1 of 5</span>
+          <span id="batchPercentText" class="muted">0%</span>
+        </div>
+        <progress id="jobProgress" aria-label="Generation progress"></progress>
+        <p id="jobElapsed" class="hint">The first run can take longer while models load.</p>
+      </div>
+      <div id="batchGallerySection" class="batch-gallery-section" hidden>
+        <div class="batch-gallery-header">
+          <div class="batch-gallery-title">
+            <strong>Batch Gallery</strong>
+            <span id="batchGalleryCount" class="batch-count-pill">0/0</span>
+          </div>
+          <div class="batch-gallery-actions">
+            <button id="downloadAllBtn" class="text-button" type="button">Download all</button>
+          </div>
+        </div>
+        <div id="batchGallery" class="batch-gallery" role="tablist" aria-label="Batch images"></div>
+      </div>
       <div id="outputError" class="notice error" role="alert" hidden></div>
+      <button id="repairResult" type="button" class="secondary" hidden>Repair a hand, leg or contact area</button>
       <div id="preview" class="preview">
-        <div id="emptyState" class="empty-state"><svg viewBox="0 0 48 48" aria-hidden="true"><rect x="7" y="7" width="34" height="34" rx="5"/><circle cx="18" cy="18" r="3"/><path d="m8 35 11-10 8 6 6-9 8 13"/></svg><h2>Create something worth keeping.</h2><p>Describe an image, choose a mode and generate. Or switch to Edit image to give an original a new direction.</p></div>
+        <div id="emptyState" class="empty-state">
+          <img src="/assets/qwen_icon.png" class="empty-state-qwen-logo" alt="Qwen Logo" width="72" height="72">
+          <h2>Create something worth keeping.</h2>
+          <p>Describe an image, choose a mode and generate. Or switch to Edit image to give an original a new direction.</p>
+        </div>
+        <div id="previewLoading" class="preview-loading" hidden>
+          <div class="loading-card">
+            <div class="loading-logo-wrap">
+              <img src="/assets/qwen_icon.png" class="loading-qwen-logo" alt="Qwen AI Generating" width="76" height="76">
+              <div class="loading-glow"></div>
+              <div class="loading-spinner"></div>
+            </div>
+            <div class="loading-content">
+              <h3 id="loadingTitle">Generating your image…</h3>
+              <p id="loadingPhase">Starting local Qwen Image 2.1 model…</p>
+            </div>
+            <div class="loading-bar-wrap">
+              <div id="loadingProgressTrack" class="loading-progress-track">
+                <div id="loadingProgressBar" class="loading-progress-bar indeterminate"></div>
+              </div>
+              <div class="loading-meta-row">
+                <span id="loadingStepDetail" class="loading-step-detail">Preparing latent space…</span>
+                <span id="loadingTimer" class="loading-timer">0s</span>
+              </div>
+            </div>
+          </div>
+        </div>
         <div id="comparison" class="comparison" hidden><img id="resultImage" alt="Qwen generated result"><img id="beforeImage" class="before-image" alt="Original image before editing" hidden><div id="comparisonLine" class="comparison-line" hidden></div><span id="beforeBadge" class="image-badge before-badge" hidden>Original</span><span id="afterBadge" class="image-badge after-badge" hidden>Edited</span></div>
       </div>
-      <div id="resultTools" hidden><div id="comparisonControls" class="comparison-controls" hidden><label for="compareRange">Original / edited</label><input id="compareRange" type="range" min="0" max="100" value="50" aria-label="Reveal original or edited image"><button id="toggleCompare" type="button" class="text-button" aria-pressed="true">Hide original</button></div><div class="result-actions"><a id="downloadImage" class="secondary" href="#" download="qwen-image.png">Download PNG</a><button id="editResult" type="button" class="secondary">Edit this image</button></div><p id="resultSummary" class="result-summary"></p><div id="resultWarnings" class="notice" hidden></div><details class="result-details"><summary>Generation details</summary><pre id="resultMetadata"></pre></details></div>
+      <div id="resultTools" hidden><div id="comparisonControls" class="comparison-controls" hidden><label for="compareRange">Original / edited</label><input id="compareRange" type="range" min="0" max="100" value="50" aria-label="Reveal original or edited image"><button id="toggleCompare" type="button" class="text-button" aria-pressed="true">Hide original</button></div><div class="result-actions"><a id="downloadImage" class="secondary" href="#" download="qwen-image.png">Download PNG</a><button id="revealInExplorer" type="button" class="secondary" title="Highlight image in Windows File Explorer"><svg viewBox="0 0 24 24" aria-hidden="true" width="14" height="14" style="margin-right:4px;"><path d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"/></svg>Show in folder</button><button id="editResult" type="button" class="secondary">Edit this image</button></div><p id="resultSummary" class="result-summary"></p><div id="resultWarnings" class="notice" hidden></div><details class="result-details"><summary>Generation details</summary><pre id="resultMetadata"></pre></details></div>
     </section>
   </main>
-  <footer>Qwen Image 2.1 · local ComfyUI <span>Mask boundaries control what can change. Review them carefully.</span></footer>
+  <footer class="app-footer"><div class="footer-left"><img src="/assets/qwen_icon.png" alt="" width="16" height="16"><span>Qwen Image 2.1 · Local ComfyUI</span></div><span>Mask boundaries control what can change. Review them carefully.</span></footer>
 </body>
 </html>

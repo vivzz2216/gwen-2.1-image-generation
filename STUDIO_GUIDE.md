@@ -1,8 +1,21 @@
-# Qwen Image 2.1 Studio
+# Qwen Image 2.1 Studio (Windows Desktop App)
 
-Run `start_studio.bat`, then visit http://localhost:7860. The launcher starts or
-reuses the bundled CUDA ComfyUI backend at http://localhost:8188. Keep the Studio
-terminal open. Models and generation run locally; no generation API key is needed.
+Launch via **`QwenImageStudio.exe`** or **`start_studio.bat`**. This opens a dedicated
+standalone Windows desktop application window (powered by Microsoft Edge WebView2)
+without console clutter or browser tabs. The launcher automatically starts or reuses the
+bundled CUDA ComfyUI backend at http://localhost:8188 and local Dolphin prompt enhancer.
+
+### Launching & Shortcuts
+- **Direct Executable**: Double-click `QwenImageStudio.exe` (or `launch_app.vbs` for silent background start).
+- **Desktop Shortcut**: Run `create_desktop_shortcut.bat` to create a dedicated shortcut on your Windows Desktop and Start Menu.
+- **Batch Launcher**: Run `start_studio.bat` (or `start_studio.bat --browser` for external browser mode).
+- **Hotkeys**:
+  - `Ctrl + Enter`: Generate / Run current task
+  - `Ctrl + S`: Download result PNG
+  - `Ctrl + O`: Choose/open image for editing
+  - `Ctrl + Shift + O`: Open outputs folder in Windows File Explorer
+- **Drag & Drop**: Drag any image from Windows Explorer directly into the app window to start editing.
+
 
 ## Choose a mode
 
@@ -99,8 +112,10 @@ edits; it takes several minutes and writes `outputs/verification_report.json`.
 If the backend is offline, start `run_qwen_comfyui.bat` and inspect
 `ComfyUI_windows_portable/qwen_comfyui.stderr.log`. If memory runs out, try Fast,
 close memory-heavy applications, and use fewer reference images. Segmentation and
-generation are serialized. The optional 9B prompt rewriter and extra upscaler are
-not installed; prompt enhancement uses a deterministic local template.
+generation are serialized. The optional official 9B vision prompt rewriter and
+extra upscaler are not installed. Enhance uses the local `qwen21-dolphin` profile
+for task-specific text rewriting. See [DOLPHIN_PROMPTING.md](DOLPHIN_PROMPTING.md)
+for configuration, limitations, sources and verification.
 
 If needed, `QWEN_ENCODER_DEVICE=cpu` selects the slower CPU encoder for
 troubleshooting. Adding `--cpu-vae` to the Comfy launcher selects CPU VAE fallback.

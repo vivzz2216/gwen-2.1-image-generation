@@ -25,6 +25,7 @@ from PIL import Image
 UNET_NAME = "qwen_image_2.1_int8_convrot.safetensors"
 CLIP_NAME = "qwen3vl_8b_int8_convrot.safetensors"
 VAE_NAME = "qwen_image_2.1_vae_bf16.safetensors"
+LORA_NAME = "NSFW Qwen by TheseAlpacas V2.safetensors"
 
 
 class ImageGenerationError(RuntimeError):
@@ -110,6 +111,8 @@ def build_workflow(
     source_size: tuple[int, int] | None = None, source_has_alpha: bool = False,
     reference_names: list[str] | tuple[str, ...] = (), mask_name: str | None = None,
     cache_device: str | None = None, cache_dtype: str | None = None,
+    lora_name: str | None = None, lora_strength: float = 0.8,
+    sampler_name: str | None = None, scheduler: str | None = None,
 ) -> dict:
     """Build a core-node API workflow; SaveImage is always node 9.
 
@@ -138,12 +141,16 @@ def build_workflow(
         raise ValueError("QWEN_ENCODER_DEVICE must be default or cpu")
     workflow = {
         "1": _node("UNETLoader", unet_name=UNET_NAME, weight_dtype="default"),
-        "2": _node("QwenImage21Cache", model=["1", 0], device=device, dtype=dtype),
         "3": _node("CLIPLoader", clip_name=CLIP_NAME, type="qwen_image", device=encoder_device),
         "4": _node("VAELoader", vae_name=VAE_NAME),
         "5": _node("TextEncodeQwenImage21", clip=["3", 0], prompt=prompt.strip(),
                    negative_prompt="", resolution=profile.resolution),
     }
+    model_link = ["1", 0]
+    if lora_name and float(lora_strength) != 0.0:
+        workflow["1b"] = _node("LoraLoaderModelOnly", model=model_link, lora_name=lora_name, strength_model=float(lora_strength))
+        model_link = ["1b", 0]
+    workflow["2"] = _node("QwenImage21Cache", model=model_link, device=device, dtype=dtype)
     if source_name:
         workflow["10"] = _node("LoadImage", image=_input_name(source_name))
         image_link = ["10", 0]
@@ -179,7 +186,7 @@ def build_workflow(
         latent_link = ["6", 0]
     workflow["7"] = _node("KSampler", model=["2", 0], positive=["5", 0], negative=["5", 1],
                           latent_image=latent_link, seed=seed, steps=steps, cfg=1.0,
-                          sampler_name="euler", scheduler="simple", denoise=1.0)
+                          sampler_name=sampler_name or "euler", scheduler=scheduler or "simple", denoise=1.0)
     if profile.tiled_decode:
         workflow["8"] = _node("VAEDecodeTiled", samples=["7", 0], vae=["4", 0],
                               tile_size=512, overlap=64, temporal_size=64, temporal_overlap=8)
