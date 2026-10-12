@@ -4,7 +4,7 @@ from PIL import Image, ImageDraw, ImageFilter
 
 from editing_regions import composite_preserving
 
-SMALL_FACE_PX = 128
+SMALL_FACE_PX = 256
 MIN_FACE_PX = 20
 CONTEXT = 3.0
 WORK_SIZE = 768

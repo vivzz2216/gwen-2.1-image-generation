@@ -593,7 +593,8 @@ async def prepare_request(task, prompt, mode, aspect_ratio, seed, num_steps, tra
                           pose_enabled=False, pose_reference=None, pose_reviewed=False, pose_order="same",
                           mask_reviewed=False, repair_kind="none", repair_parent_id="", lora_name="",
                           identity_enabled=False, identity_reference=None, identity_reviewed=False, identity_box="",
-                          face_detail: bool = False):
+                          face_detail: bool = False,
+                          face_detail_adapter: Literal["auto", "bfs_head", "none"] = "auto"):
     lora_name = resolve_lora(lora_name)
     settings = GenerateRequest(prompt=prompt, mode=mode, aspect_ratio=aspect_ratio, seed=seed,
                                num_steps=num_steps, is_transparent=transparent,
@@ -727,7 +728,8 @@ async def prepare_request(task, prompt, mode, aspect_ratio, seed, num_steps, tra
             "identity_head_path": str(identity_head_path) if identity_head_path else None,
             "reference_only": task == "generate" and identity_enabled,
             "repair_kind": repair_kind, "repair_parent_id": repair_parent_id,
-            "face_detail": bool(face_detail or repair_kind == "face_detail")}
+            "face_detail": bool(face_detail or repair_kind == "face_detail"),
+            "face_detail_adapter": face_detail_adapter}
 
 
 @app.post("/api/jobs", status_code=202)
@@ -747,6 +749,7 @@ async def submit_job(
     identity_enabled: bool = Form(False), identity_reference: Optional[UploadFile] = File(None),
     identity_reviewed: bool = Form(False), identity_box: str = Form("", max_length=200),
     face_detail: bool = Form(False),
+    face_detail_adapter: Literal["auto", "bfs_head", "none"] = Form("auto"),
 ):
     try:
         request = await prepare_request(task, prompt, mode, aspect_ratio, seed, num_steps,
@@ -756,7 +759,8 @@ async def submit_job(
             pose_order=pose_order, mask_reviewed=mask_reviewed, repair_kind=repair_kind, repair_parent_id=repair_parent_id,
             identity_enabled=identity_enabled, identity_reference=identity_reference,
             identity_reviewed=identity_reviewed, identity_box=identity_box,
-            face_detail=face_detail)
+            face_detail=face_detail,
+            face_detail_adapter=face_detail_adapter)
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
     job_id = uuid.uuid4().hex
@@ -801,6 +805,7 @@ async def submit_batch(
     identity_enabled: bool = Form(False), identity_reference: Optional[UploadFile] = File(None),
     identity_reviewed: bool = Form(False), identity_box: str = Form("", max_length=200),
     face_detail: bool = Form(False),
+    face_detail_adapter: Literal["auto", "bfs_head", "none"] = Form("auto"),
 ):
     try:
         raw_prompts = json.loads(prompts) if prompts.strip().startswith("[") else [p.strip() for p in prompts.split("\n")]
@@ -829,7 +834,8 @@ async def submit_batch(
             pose_order=pose_order, mask_reviewed=mask_reviewed,
             identity_enabled=identity_enabled, identity_reference=identity_reference,
             identity_reviewed=identity_reviewed, identity_box=identity_box,
-            face_detail=face_detail
+            face_detail=face_detail,
+            face_detail_adapter=face_detail_adapter,
         )
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
@@ -1153,7 +1159,12 @@ def process_job(job_id, cancel):
                             uploaded.append(head_dest)
                             head_name = f"studio_uploads/{head_dest.name}"
 
-                        use_bfs = (LORA_DIR / BFS_HEAD_LORA).is_file()
+                        adapter_choice = req.get("face_detail_adapter", "auto")
+                        bfs_available = (LORA_DIR / BFS_HEAD_LORA).is_file()
+                        use_bfs = (adapter_choice == "bfs_head") or (adapter_choice == "auto" and bfs_available)
+                        if adapter_choice == "none":
+                            use_bfs = False
+
                         if use_bfs:
                             compiled_detail = face_detail.prompt(prompt_text, use_bfs_head=True)
                             lora_crop = BFS_HEAD_LORA

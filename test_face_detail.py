@@ -14,7 +14,7 @@ class FaceDetailTests(unittest.TestCase):
         ]))
 
     def test_plan_skips_when_face_is_already_large(self):
-        faces = [{'box': (200, 150, 160, 200), 'width': 160, 'height': 200}]
+        faces = [{'box': (200, 150, 280, 320), 'width': 280, 'height': 320}]
         self.assertIsNone(face_detail.plan((896, 672), faces))
 
     def test_plan_skips_when_face_is_too_tiny(self):
