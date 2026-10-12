@@ -201,7 +201,7 @@ def parsed_reply(content, prompt, task, ratio, reference_count, descriptive=Fals
 
 def enhance(prompt, *, task="generate", aspect_ratio="1:1", region="auto",
             preserve=True, reference_count=0, is_transparent=False, keep_alive=0, model=None,
-            enhancement_style="describe", pose_assist=False):
+            enhancement_style="describe", pose_assist=False, identity_assist=False):
     prompt = prompt.strip()
     if not prompt or len(prompt) > 4000 or task not in ("generate", "edit"):
         raise EnhancementError("Enter a prompt up to 4000 characters and a valid task.", 422)
@@ -240,6 +240,8 @@ def enhance(prompt, *, task="generate", aspect_ratio="1:1", region="auto",
         if task == "edit" and reference_count:
             brief["reference_policy"] = "Image 1 is the original source. Image 2 is pose guidance only." + (" Image 3 is the separate appearance reference." if reference_count > 1 else "") + " Never invent unseen image contents."
         brief["pose_policy"] = "Pose guidance is supplied separately by the app. Do not invent a pose, lock the old pose or guess unseen reference contents. Retain requested interaction/contact details."
+    if identity_assist:
+        brief["reference_policy"] = ("Image 1 supplies the identity photograph for creation or original scene for editing. Image 2 is the selected identity head crop." + (" Image 3 supplies body pose only." if pose_assist else "") + " Do not describe unseen facial features or add changes; retain the user's action. Do not freeze old pose, expression or head angle when a change is requested.")
     payload = {
         "model": selected_model, "messages": [{"role": "system", "content": system},
             {"role": "user", "content": json.dumps(brief, ensure_ascii=False)}],

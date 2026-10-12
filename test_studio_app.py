@@ -72,7 +72,7 @@ class GenerationTests(unittest.TestCase):
         data = response.json()
         self.assertIn("lora", data)
         self.assertTrue(data["lora"]["installed"])
-        self.assertEqual(data["lora"]["name"], "NSFW Qwen by TheseAlpacas V2.safetensors")
+        self.assertEqual(data["lora"]["name"], "NSFW Qwen Lora.safetensors")
         self.assertEqual(data["lora"]["recommended_strength"], 0.8)
 
     @patch("studio_service._run_comfy_workflow", return_value="/outputs/qwen_lora.png")
@@ -90,6 +90,26 @@ class GenerationTests(unittest.TestCase):
         wf_disabled = run_workflow.call_args.args[0]
         self.assertNotIn("1b", wf_disabled)
         self.assertEqual(wf_disabled["2"]["inputs"]["model"], ["1", 0])
+
+    def test_capabilities_lists_available_loras(self):
+        data = self.client.get("/api/capabilities").json()
+        available = data["lora"]["available"]
+        self.assertIn("NSFW Qwen Lora.safetensors", available)
+        self.assertNotIn("NSFW Qwen by TheseAlpacas V2.safetensors", available)
+
+    @patch("studio_service._run_comfy_workflow", return_value="/outputs/qwen_lora.png")
+    def test_generate_uses_selected_lora(self, run_workflow):
+        res = self.client.post("/api/generate", json={"prompt": "scene", "lora_name": "NSFW Qwen Lora.safetensors"})
+        self.assertEqual(res.status_code, 200)
+        wf = run_workflow.call_args.args[0]
+        self.assertEqual(wf["1b"]["inputs"]["lora_name"], "NSFW Qwen Lora.safetensors")
+
+    @patch("studio_service._run_comfy_workflow", return_value="/outputs/qwen_lora.png")
+    def test_generate_rejects_unknown_or_traversal_lora(self, run_workflow):
+        for bad in ("missing.safetensors", "..\\..\\evil.safetensors"):
+            res = self.client.post("/api/generate", json={"prompt": "scene", "lora_name": bad})
+            self.assertEqual(res.status_code, 422)
+        run_workflow.assert_not_called()
 
     def test_capabilities_reports_dual_enhancers(self):
         response = self.client.get("/api/capabilities")

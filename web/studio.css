@@ -96,3 +96,5 @@ body.window-dragging::after{content:"Drop image to edit in Qwen Studio";position
 .loading-step-detail{color:var(--accent);font-weight:500}
 .lora-slider-row{margin-top:-6px;padding:10px 14px;background:var(--field);border-radius:8px;border:1px solid var(--border);transition:opacity 0.2s ease}
 .lora-slider-row.disabled{opacity:.35;pointer-events:none}
+.lora-slider-row select{width:100%;margin-bottom:10px}
+.lora-slider-row .lora-strength-label{margin-top:2px}

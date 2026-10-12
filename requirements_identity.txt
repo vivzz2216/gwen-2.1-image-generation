@@ -1,0 +1,2 @@
+# Optional CPU-only detection/scoring. Existing NumPy is retained during installation.
+opencv-python-headless==4.13.0.92

@@ -25,7 +25,7 @@ from PIL import Image
 UNET_NAME = "qwen_image_2.1_int8_convrot.safetensors"
 CLIP_NAME = "qwen3vl_8b_int8_convrot.safetensors"
 VAE_NAME = "qwen_image_2.1_vae_bf16.safetensors"
-LORA_NAME = "NSFW Qwen by TheseAlpacas V2.safetensors"
+LORA_NAME = os.environ.get("QWEN_LORA_NAME") or "NSFW Qwen Lora.safetensors"
 
 
 class ImageGenerationError(RuntimeError):
@@ -113,6 +113,7 @@ def build_workflow(
     cache_device: str | None = None, cache_dtype: str | None = None,
     lora_name: str | None = None, lora_strength: float = 0.8,
     sampler_name: str | None = None, scheduler: str | None = None,
+    reference_only: bool = False,
 ) -> dict:
     """Build a core-node API workflow; SaveImage is always node 9.
 
@@ -132,6 +133,8 @@ def build_workflow(
         raise ValueError("Use at most two additional references on this 6 GB configuration")
     if (mask_name or reference_names) and not source_name:
         raise ValueError("Editing references and masks require a source image")
+    if reference_only and (not source_name or mask_name):
+        raise ValueError("Reference-only creation requires an identity image and cannot use an edit mask")
     device = cache_device or os.getenv("QWEN_CACHE_DEVICE", profile.cache_device)
     dtype = cache_dtype or os.getenv("QWEN_CACHE_DTYPE", profile.cache_dtype)
     if device not in {"auto", "gpu", "cpu", "off"} or dtype not in {"default", "int8", "int4"}:
@@ -182,6 +185,10 @@ def build_workflow(
         width, height = generation_dimensions(mode, aspect_ratio)
         # KSampler converts this empty latent to the model's native 64 channels
         # and 16x downscale using fix_empty_latent_channels.
+        workflow["6"] = _node("EmptyLatentImage", width=width, height=height, batch_size=1)
+        latent_link = ["6", 0]
+    if reference_only:
+        width, height = generation_dimensions(mode, aspect_ratio)
         workflow["6"] = _node("EmptyLatentImage", width=width, height=height, batch_size=1)
         latent_link = ["6", 0]
     workflow["7"] = _node("KSampler", model=["2", 0], positive=["5", 0], negative=["5", 1],

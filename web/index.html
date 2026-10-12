@@ -8,8 +8,8 @@
   <link rel="icon" type="image/x-icon" href="/web/favicon.ico">
   <link rel="shortcut icon" href="/web/favicon.ico">
   <link rel="stylesheet" href="/web/studio.css?v=prompt-cleanup-v1">
-  <link rel="stylesheet" href="/web/layout.css?v=pose-assist-description-1">
-  <script src="/web/studio.js?v=pose-assist-description-1" defer></script>
+  <link rel="stylesheet" href="/web/layout.css?v=three-workflows-1">
+  <script src="/web/studio.js?v=three-workflows-1" defer></script>
 </head>
 <body>
   <header class="app-header">
@@ -33,9 +33,10 @@
   </header>
   <main class="studio-layout">
     <section class="controls" aria-label="Studio controls">
-      <div class="task-tabs" role="tablist" aria-label="Workflow"><button id="createTab" class="task-tab selected" type="button" role="tab" aria-selected="true" aria-controls="controlBody" data-task="generate">Create image</button><button id="editTab" class="task-tab" type="button" role="tab" aria-selected="false" aria-controls="controlBody" data-task="edit">Edit image</button></div>
+      <div class="task-tabs" role="tablist" aria-label="Workflow"><button id="createTab" class="task-tab selected" type="button" role="tab" aria-selected="true" aria-controls="controlBody" data-task="generate">Create image</button><button id="editTab" class="task-tab" type="button" role="tab" aria-selected="false" aria-controls="controlBody" data-task="edit" tabindex="-1">Edit image</button><button id="restyleTab" class="task-tab" type="button" role="tab" aria-selected="false" aria-controls="controlBody" data-task="restyle" tabindex="-1">Restyle entire image</button></div>
       <form id="studioForm" novalidate autocomplete="off">
         <div id="controlBody" class="control-body" role="tabpanel" aria-labelledby="createTab">
+          <p id="workflowHint" class="hint workflow-hint">Create an image from your text prompt.</p>
           <div id="sourceSection" class="edit-only" hidden>
             <div class="label-row"><label for="sourceInput">Original image</label><button id="removeSource" type="button" class="text-button" hidden>Remove</button></div>
             <label id="sourceDrop" class="upload-zone" for="sourceInput"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 16V4m-4 4 4-4 4 4M4 15v5h16v-5"/></svg><span id="sourceFileLabel">Choose an image or drop it here</span><small>PNG, JPEG or WebP · up to 25 MB</small></label><input id="sourceInput" class="sr-only" type="file" accept="image/png,image/jpeg,image/webp">
@@ -44,6 +45,34 @@
               <div class="editor-caption"><span id="sourceDimensions"></span><span>Pink = editable</span></div>
             </div>
           </div>
+          <details id="identityDetails" class="advanced identity-studio" open hidden><summary><span class="identity-studio-title">Qwen-Image-Core Studio</span><span class="muted">same person, new action</span></summary>
+            <p id="identityTaskHint" class="hint">Upload one photo of a person. The face crop is prepared from this same photo. Describe the new pose, expression, outfit or scene below.</p>
+            <label id="identityEnableRow" class="check-row" hidden><input id="identityEnabled" type="checkbox"><span>Use the reviewed face reference<small>Use this when repairing facial likeness.</small></span></label>
+            <div id="identityControls" hidden>
+              <label id="identityDrop" class="upload-zone compact" for="identityInput"><span id="identityFileLabel">Choose identity photograph</span><small>PNG, JPEG, WebP or AVIF · up to 25 MB</small></label>
+              <input id="identityInput" class="sr-only" type="file" accept="image/png,image/jpeg,image/webp,image/avif,.avif">
+              <button id="identityUseSource" type="button" class="text-button" hidden>Use original edit photo</button>
+              <button id="identityRemove" type="button" class="text-button" hidden>Remove identity photo</button>
+              <p id="identityStatus" class="hint" role="status" aria-live="polite">Choose a clear photo with the face visible. Review the crop prepared from your upload.</p>
+              <label for="identityFace">Selected face</label><select id="identityFace" disabled><option value="">Upload a photograph first</option></select>
+              <canvas id="identityCanvas" class="identity-preview" aria-label="Identity photograph with the selected head crop outlined" hidden></canvas>
+              <details id="identityCropDetails"><summary>Adjust head crop <span class="muted">manual fallback</span></summary>
+                <p class="hint">Percentages of the photo. Include one face with hair and head context; keep the crop inside the image.</p>
+                <div class="identity-crop-grid">
+                  <div><label for="identityX">Left %</label><input id="identityX" type="number" min="0" max="100" step="0.01" value="0"></div>
+                  <div><label for="identityY">Top %</label><input id="identityY" type="number" min="0" max="100" step="0.01" value="0"></div>
+                  <div><label for="identityW">Width %</label><input id="identityW" type="number" min="0.01" max="100" step="0.01" value="100"></div>
+                  <div><label for="identityH">Height %</label><input id="identityH" type="number" min="0.01" max="100" step="0.01" value="100"></div>
+                </div>
+                <button id="identityApplyCrop" type="button" class="secondary full-width">Preview this head crop</button>
+              </details>
+              <img id="identityHeadPreview" class="identity-preview" alt="Selected identity head crop to approve" hidden>
+              <a id="identityHeadOpen" class="text-button" target="_blank" rel="noopener" hidden>Open full-size head crop</a>
+              <label class="check-row"><input id="identityReviewed" type="checkbox" disabled><span>I reviewed the selected person and head crop<small>Check likeness after generation. New angles and expressions regenerate facial pixels.</small></span></label>
+              <button id="identityContinue" type="button" class="secondary full-width" disabled>Write the action or scene</button>
+              <p class="hint">Describe your changes below, choose a mode, then press Restyle image. Check facial likeness and anatomy in the result.</p>
+            </div>
+          </details>
           <div class="prompt-section">
             <div class="label-row">
               <label id="promptLabel" for="prompt">Describe your image</label>
@@ -102,7 +131,7 @@
               <option value="global">Whole image (Global edit)</option>
             </select>
             <p id="maskMessage" class="hint">Auto detects supported clothes/accessory areas. Movement edits use the whole image; exact outside-pixel preservation requires a reviewed mask.</p>
-            <div id="repairControls" hidden><label for="repairKind">Repair target</label><select id="repairKind"><option value="hand">Hand / wrist</option><option value="leg">Leg / foot</option><option value="contact">Interaction / contact</option></select><p id="repairHint" class="hint">Paint the defect and enough connected joint/context. Review the mask before submitting one repair.</p><button id="cancelRepair" type="button" class="text-button">Leave repair mode</button></div>
+            <div id="repairControls" hidden><label for="repairKind">Repair target</label><select id="repairKind"><option value="hand">Hand / wrist</option><option value="leg">Leg / foot</option><option value="contact">Interaction / contact</option><option value="face">Face / likeness (Identity Assist)</option></select><p id="repairHint" class="hint">Paint the defect and enough connected joint/context. Review the mask before submitting one repair.</p><button id="cancelRepair" type="button" class="text-button">Leave repair mode</button></div>
             <details id="manualMaskDetails" class="manual-mask-details">
               <summary>Manual mask adjustments <span class="muted">optional override</span></summary>
               <div id="maskControls">
@@ -131,9 +160,11 @@
           <fieldset class="mode-fieldset"><legend>Generation mode</legend><div class="mode-buttons"><button type="button" data-mode="fast" aria-pressed="false"><strong>Fast</strong><span id="fastSpec">512 · 16 steps</span></button><button type="button" class="selected" data-mode="balanced" aria-pressed="true"><strong>Balanced</strong><span id="balancedSpec">768 · 28 steps</span></button><button type="button" data-mode="ultra" aria-pressed="false"><strong>Ultra</strong><span id="ultraSpec">1024 · 36 steps</span></button></div><p id="modeDescription" class="hint">A higher resolution pass for a strong balance of detail and resource use.</p></fieldset>
           <div class="generation-settings"><label for="aspectRatio">Aspect ratio</label><select id="aspectRatio"><option value="1:1">Square · 1:1</option><option value="16:9">Landscape · 16:9</option><option value="9:16">Portrait · 9:16</option><option value="4:3">Standard · 4:3</option><option value="3:4">Standard portrait · 3:4</option><option value="3:2">Classic · 3:2</option><option value="2:3">Classic portrait · 2:3</option></select></div>
           <label class="check-row"><input id="transparent" type="checkbox"><span>Transparent background<small>Request native RGBA output.</small></span></label>
-          <label class="check-row"><input id="loraToggle" type="checkbox" checked><span>NSFW Prompt Fidelity (TheseAlpacas V2)<small>Enables anatomy, positioning & interaction fine-tuning.</small></span></label>
+          <label class="check-row"><input id="loraToggle" type="checkbox" checked><span>NSFW LoRA<small>Enables anatomy, positioning & interaction fine-tuning.</small></span></label>
           <div id="loraStrengthContainer" class="lora-slider-row">
-            <div class="label-row"><label for="loraStrength">LoRA Strength</label><span id="loraStrengthVal" class="muted">0.80</span></div>
+            <div class="label-row"><label for="loraSelect">LoRA model</label></div>
+            <select id="loraSelect" aria-label="LoRA model"><option value="">Default</option></select>
+            <div class="label-row lora-strength-label"><label for="loraStrength">LoRA Strength</label><span id="loraStrengthVal" class="muted">0.80</span></div>
             <input id="loraStrength" type="range" min="0" max="1.5" step="0.05" value="0.80">
           </div>
           <details id="poseAssistDetails" class="advanced"><summary>Pose Assist <span class="muted">optional visual guidance</span></summary>
@@ -185,7 +216,7 @@
         <div id="batchGallery" class="batch-gallery" role="tablist" aria-label="Batch images"></div>
       </div>
       <div id="outputError" class="notice error" role="alert" hidden></div>
-      <button id="repairResult" type="button" class="secondary" hidden>Repair a hand, leg or contact area</button>
+      <button id="repairResult" type="button" class="secondary" hidden>Repair a face, hand, leg or contact area</button>
       <div id="preview" class="preview">
         <div id="emptyState" class="empty-state">
           <img src="/assets/qwen_icon.png" class="empty-state-qwen-logo" alt="Qwen Logo" width="72" height="72">

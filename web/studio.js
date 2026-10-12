@@ -4,6 +4,7 @@
   const $ = id => document.getElementById(id);
   const state = {
     task: "generate",
+    workflow: "generate",
     mode: "balanced",
     source: null,
     sourceUrl: null,
@@ -11,6 +12,14 @@
     pose: null,
     poseUrl: null,
     repairParent: null,
+    identity: null,
+    identityUrl: null,
+    identityImage: null,
+    identityBox: null,
+    identityFaces: [],
+    identityHeadUrl: null,
+    identityBusy: false,
+    identityVersion: 0,
     maskReady: false,
     tool: "paint",
     undo: [],
@@ -97,7 +106,7 @@
     try {
       localStorage.setItem("qwen-studio-settings", JSON.stringify({
         mode: state.mode,
-        task: state.task,
+        task: state.workflow,
         aspect_ratio: $("aspectRatio").value,
         seed: $("seed").value,
         num_steps: $("steps").value,
@@ -106,6 +115,7 @@
         is_transparent: $("transparent").checked,
         lora_enabled: $("loraToggle") ? $("loraToggle").checked : true,
         lora_strength: $("loraStrength") ? $("loraStrength").value : "0.80",
+        lora_name: state.loraName || "",
         enhancer: state.enhancer || "dolphin",
         enhancement_style: $("enhancementStyle").value
       }));
@@ -115,16 +125,25 @@
   }
 
   function updateRun() {
-    const active = !!state.jobId || !!state.batchId || state.submitting || state.enhancing;
+    const active = !!state.jobId || !!state.batchId || state.submitting || state.enhancing || state.identityBusy;
     const promptCount = getPromptValues().map(p => p.trim()).filter(Boolean).length;
     const countLabel = promptCount > 1 ? ` (${promptCount})` : "";
     $("runLabel").textContent = state.submitting
       ? "Submitting…"
-      : `${state.task === "edit" ? "Edit image" : "Generate"}${countLabel} · ${formatMode(state.mode)}`;
+      : `${state.workflow === "restyle" ? "Restyle image" : state.task === "edit" ? "Edit image" : "Generate"}${countLabel} · ${formatMode(state.mode)}`;
     $("runButton").disabled = active;
     $("repairResult").disabled = active;
     $("poseEnabled").disabled = active;
     $("poseOrder").disabled = active;
+    $("identityEnabled").disabled = active;
+    $("identityUseSource").disabled = active || !state.source;
+    $("identityRemove").disabled = active;
+    $("identityFace").disabled = active || !state.identityFaces.length;
+    $("identityApplyCrop").disabled = active || !state.identity;
+    $("identityInput").disabled = active;
+    $("identityReviewed").disabled = active || !state.identityBox;
+    $("identityContinue").disabled = active || !state.identityBox || !$("identityReviewed").checked;
+    ["identityX", "identityY", "identityW", "identityH"].forEach(id => { $(id).disabled = active; });
     $("enhanceAllBtn").disabled = active;
     const clearAllBtn = $("clearAllPromptsBtn");
     if (clearAllBtn) clearAllBtn.disabled = active;
@@ -132,7 +151,7 @@
     document.querySelectorAll(".card-enhance-btn, .card-alt-enhance-btn").forEach(btn => { btn.disabled = active; });
     document.querySelectorAll(".card-clear-btn").forEach(btn => { btn.disabled = active; });
     document.querySelectorAll(".card-remove-btn").forEach(btn => { btn.disabled = active; });
-    document.querySelectorAll("[data-task]").forEach(button => { button.disabled = state.enhancing; });
+    document.querySelectorAll("[data-task]").forEach(button => { button.disabled = active; });
   }
 
   function chooseMode(mode) {
@@ -149,26 +168,52 @@
     savePreference();
   }
 
-  function chooseTask(task) {
-    if (state.task !== task) $("poseReviewed").checked = false;
+  function syncIdentitySection() {
+    const restyle = state.workflow === "restyle";
+    const faceRepair = state.workflow === "edit" && state.repairParent && $("repairKind").value === "face";
+    $("identityDetails").hidden = !(restyle || faceRepair);
+    $("identityEnableRow").hidden = !faceRepair;
+    if (restyle) $("identityEnabled").checked = true;
+    else if (!faceRepair) $("identityEnabled").checked = false;
+    $("identityControls").hidden = !$("identityEnabled").checked;
+    $("identityUseSource").hidden = !faceRepair;
+    $("identityTaskHint").textContent = faceRepair
+      ? "Review the retained face reference for this repair. Your selected result is already loaded as the image to edit."
+      : "Upload one photo of a person. The face crop is prepared from this same photo. Describe the new pose, expression, outfit or scene below.";
+  }
+
+  function chooseTask(workflow) {
+    if (!["generate", "edit", "restyle"].includes(workflow)) workflow = "generate";
+    const task = workflow === "edit" ? "edit" : "generate";
+    if (state.workflow !== workflow) {
+      $("poseReviewed").checked = false;
+      $("identityReviewed").checked = false;
+      state.repairParent = null; $("repairControls").hidden = true;
+    }
+    state.workflow = workflow;
     state.task = task;
     document.querySelectorAll("[data-task]").forEach(button => {
-      const selected = button.dataset.task === task;
+      const selected = button.dataset.task === workflow;
       button.classList.toggle("selected", selected);
       button.setAttribute("aria-selected", String(selected));
       button.tabIndex = selected ? 0 : -1;
     });
     document.querySelectorAll(".edit-only").forEach(element => { element.hidden = task !== "edit"; });
     $("styleChips").hidden = task === "edit";
-    $("promptLabel").textContent = task === "edit" ? "What would you like to change?" : "Describe your image";
+    syncIdentitySection();
+    $("workflowHint").textContent = workflow === "restyle" ? "One photo + your prompt. Reimagine this person in a new pose, expression, outfit or scene."
+      : task === "edit" ? "One image + your prompt. Change the original photo; use a mask when you want to protect areas."
+      : "Create an image from your text prompt.";
+    $("promptLabel").textContent = workflow === "restyle" ? "Describe the new action or scene" : task === "edit" ? "What would you like to change?" : "Describe your image";
     $("promptHint").textContent = task === "edit" ? "Name the person, action and body part to change. Use whole-image editing for movements; paint a mask for precise preservation." : "Name who acts, who receives the action, the contact body part and any left/right direction. Enhance checks the wording.";
-    $("controlBody").setAttribute("aria-labelledby", task === "edit" ? "editTab" : "createTab");
+    $("controlBody").setAttribute("aria-labelledby", workflow === "restyle" ? "restyleTab" : task === "edit" ? "editTab" : "createTab");
     document.querySelector(".generation-settings").hidden = task === "edit";
     $("modeDescription").textContent = modeDescriptions[state.mode] + (state.mode === "ultra" && task === "edit" ? " Reviewed masks enable a focused crop edit with surrounding context." : "");
 
     document.querySelectorAll(".prompt-textarea").forEach((textarea, i) => {
       textarea.placeholder = task === "edit"
         ? (i === 0 ? "Change my outfit to a black suit. Keep my face, pose, lighting and background unchanged…" : `Edit variation ${i + 1}…`)
+        : workflow === "restyle" ? "The person in my photo is riding a bicycle, looking ahead with a relaxed smile…"
         : (i === 0 ? "A cinematic portrait in warm evening light, rich natural colors and fine detail…" : `Prompt variation ${i + 1}…`);
     });
 
@@ -231,9 +276,11 @@
     }
     if (state.sourceUrl?.startsWith("blob:")) URL.revokeObjectURL(state.sourceUrl);
     state.source = file;
+    $("identityReviewed").checked = false;
     $("poseReviewed").checked = false;
     state.repairParent = null;
     $("repairControls").hidden = true;
+    syncIdentitySection();
     state.sourceUrl = url;
     state.undo = [];
     $("sourcePreview").src = url;
@@ -246,14 +293,17 @@
     invalidateMask();
     drawOverlay();
     refreshMaskTools();
+    updateRun();
     $("maskMessage").textContent = "Masking is automatic. Manual mask adjustment is optional.";
   }
 
   function clearSource() {
     if (state.sourceUrl?.startsWith("blob:")) URL.revokeObjectURL(state.sourceUrl);
     state.source = null;
+    $("identityReviewed").checked = false;
     state.repairParent = null;
     $("repairControls").hidden = true;
+    syncIdentitySection();
     state.sourceUrl = null;
     state.undo = [];
     $("sourceInput").value = "";
@@ -263,6 +313,7 @@
     mask.width = mask.height = overlay.width = overlay.height = 1;
     invalidateMask();
     refreshMaskTools();
+    updateRun();
   }
 
   function stashUndo() {
@@ -381,6 +432,20 @@
     }
   }
 
+  function populateLoras(lora) {
+    const select = $("loraSelect");
+    if (!select || !lora || !Array.isArray(lora.available) || !lora.available.length) return;
+    const wanted = lora.available.includes(state.loraName) ? state.loraName : lora.name;
+    select.replaceChildren(...lora.available.map(file => {
+      const option = document.createElement("option");
+      option.value = file;
+      option.textContent = file.replace(/\.safetensors$/i, "");
+      return option;
+    }));
+    select.value = lora.available.includes(wanted) ? wanted : lora.available[0];
+    state.loraName = select.value;
+  }
+
   async function fetchCapabilities() {
     $("refreshBackend").disabled = true;
     try {
@@ -407,6 +472,7 @@
             : "🧠 Qwen: Model not installed in Ollama";
         }
       }
+      populateLoras(data.lora);
       const profiles = data.mode_info || data.modes || data.profiles;
       if (profiles) {
         const list = Array.isArray(profiles) ? Object.fromEntries(profiles.map(m => [m.id || m.name, m])) : profiles;
@@ -689,11 +755,12 @@
           aspect_ratio: ratio,
           region: $("editRegion").value,
           preserve: $("preserve").checked,
-          reference_count: task === "edit" ? Number(Boolean(state.reference)) + Number(Boolean($("poseEnabled")?.checked && state.pose)) : 0,
+          reference_count: $("identityEnabled").checked && state.identity ? 1 + Number(Boolean($("poseEnabled").checked && state.pose)) : task === "edit" ? Number(Boolean(state.reference)) + Number(Boolean($("poseEnabled")?.checked && state.pose)) : 0,
           is_transparent: $("transparent").checked,
           model: modelPayload,
           enhancement_style: $("enhancementStyle") ? $("enhancementStyle").value : "polish",
-          pose_assist: Boolean($("poseEnabled")?.checked && state.pose)
+          pose_assist: Boolean($("poseEnabled")?.checked && state.pose),
+          identity_assist: Boolean($("identityEnabled").checked && state.identity)
         })
       });
       if (!data.enhanced) throw new Error("The enhancer returned no prompt.");
@@ -771,11 +838,12 @@
             aspect_ratio: $("aspectRatio").value,
             region: $("editRegion").value,
             preserve: $("preserve").checked,
-            reference_count: state.task === "edit" ? Number(Boolean(state.reference)) + Number(Boolean($("poseEnabled")?.checked && state.pose)) : 0,
+            reference_count: $("identityEnabled").checked && state.identity ? 1 + Number(Boolean($("poseEnabled").checked && state.pose)) : state.task === "edit" ? Number(Boolean(state.reference)) + Number(Boolean($("poseEnabled")?.checked && state.pose)) : 0,
             is_transparent: $("transparent").checked,
             model: modelPayload,
             enhancement_style: $("enhancementStyle") ? $("enhancementStyle").value : "polish",
-            pose_assist: Boolean($("poseEnabled")?.checked && state.pose)
+            pose_assist: Boolean($("poseEnabled")?.checked && state.pose),
+            identity_assist: Boolean($("identityEnabled").checked && state.identity)
           })
         });
         if (data.enhanced) {
@@ -1107,7 +1175,7 @@
 
   async function submitJob(event) {
     event.preventDefault();
-    if (state.jobId || state.batchId || state.submitting || state.enhancing) return;
+    if (state.jobId || state.batchId || state.submitting || state.enhancing || state.identityBusy) return;
     clearErrors();
 
     state.prompts = getPromptValues();
@@ -1129,6 +1197,16 @@
     }
     const precise = state.task === "edit" && $("preserve").checked && $("editRegion").value !== "global";
     const usePose = $("poseEnabled").checked;
+    const useIdentity = $("identityEnabled").checked;
+    if (useIdentity && (!state.identity || !state.identityBox || !$("identityReviewed").checked)) {
+      showError("Upload an identity photograph, select one head crop and approve its preview first.");
+      $("identityDetails").open = true;
+      return;
+    }
+    if (useIdentity && state.task === "edit" && state.reference) {
+      showError("Remove the appearance reference first. Identity Assist uses the head crop and optional pose reference slots.");
+      return;
+    }
     if (usePose && (!state.pose || !$("poseReviewed").checked)) {
       showError("Upload a pose reference and approve its preview and subject assignment first.");
       $("poseAssistDetails").open = true;
@@ -1136,6 +1214,11 @@
     }
     if (state.repairParent && (!precise || !state.maskReady || cleanPrompts.length !== 1)) {
       showError("Repair one selected result with a reviewed custom mask. Include wrist/knee/contact context.");
+      return;
+    }
+    if (state.repairParent && $("repairKind").value === "face" && !useIdentity) {
+      showError("Enable Identity Assist and approve the intended person's head crop for a face likeness repair.");
+      $("identityDetails").open = true;
       return;
     }
     if (usePose && precise && !state.maskReady && $("editRegion").value !== "auto") {
@@ -1160,6 +1243,12 @@
     form.append("pose_enabled", String(usePose));
     form.append("pose_reviewed", String($("poseReviewed").checked));
     form.append("pose_order", $("poseOrder").value);
+    form.append("identity_enabled", String(useIdentity));
+    if (useIdentity) {
+      form.append("identity_reference", state.identity);
+      form.append("identity_reviewed", String($("identityReviewed").checked));
+      form.append("identity_box", JSON.stringify(state.identityBox));
+    }
     form.append("mask_reviewed", String(state.maskReady));
     if (usePose) form.append("pose_reference", state.pose);
     if (state.repairParent) {
@@ -1171,6 +1260,9 @@
     }
     if ($("loraStrength")) {
       form.append("lora_strength", $("loraStrength").value);
+    }
+    if ($("loraSelect") && $("loraSelect").value) {
+      form.append("lora_name", $("loraSelect").value);
     }
 
     const seed = $("seed").value === "" ? Math.floor(Math.random() * 4294967295) : Number($("seed").value);
@@ -1266,6 +1358,14 @@
     const warnings = result.warnings || metadata.warnings || [];
     $("resultWarnings").hidden = !warnings.length;
     $("resultWarnings").textContent = Array.isArray(warnings) ? warnings.join(" ") : String(warnings);
+    const likeness = metadata.identity_assist?.likeness;
+    if (likeness) {
+      const measurement = likeness.status === "measured"
+        ? likeness.faces.map(face => `Face ${face.face_index+1}: ${face.cosine_similarity.toFixed(3)}`).join("; ") + " (CPU cosine similarity; not accuracy or proof of identity)."
+        : likeness.reason || "Face likeness was not measured.";
+      $("resultWarnings").textContent += ` ${measurement} Review likeness and the requested action visually.`;
+      $("resultWarnings").hidden = false;
+    }
 
     const sourceUrl = localImageUrl(result.source_url || metadata.source_url);
     const hasBefore = !!sourceUrl;
@@ -1309,12 +1409,165 @@
     $(drop).addEventListener("dragleave", () => $(drop).classList.remove("dragging"));
     $(drop).addEventListener("drop", event => {
       event.preventDefault();
+      event.stopPropagation();
       $(drop).classList.remove("dragging");
       void select(event.dataTransfer.files[0]);
     });
   }
 
+  function clearIdentity() {
+    state.identityVersion++;
+    if (state.identityUrl) URL.revokeObjectURL(state.identityUrl);
+    if (state.identityHeadUrl) URL.revokeObjectURL(state.identityHeadUrl);
+    state.identity = state.identityUrl = state.identityImage = state.identityBox = state.identityHeadUrl = null;
+    state.identityFaces = []; state.identityBusy = false;
+    $("identityInput").value = "";
+    ["identityX", "identityY", "identityW", "identityH"].forEach((id, index) => { $(id).value = index < 2 ? "0" : "100"; });
+    $("identityFileLabel").textContent = "Choose identity photograph";
+    $("identityFace").replaceChildren(new Option("Upload a photograph first", ""));
+    ["identityCanvas", "identityHeadPreview", "identityHeadOpen", "identityRemove"].forEach(id => { $(id).hidden = true; });
+    $("identityHeadPreview").removeAttribute("src"); $("identityHeadOpen").removeAttribute("href");
+    $("identityReviewed").checked = false;
+    $("identityStatus").textContent = "Detection runs on CPU. Upload a clear photograph, then review a head crop.";
+    updateRun();
+  }
+
+  function drawIdentityPhoto(box = null) {
+    const img = state.identityImage;
+    if (!img) return;
+    const canvas = $("identityCanvas"), ratio = Math.min(1, 900/Math.max(img.naturalWidth, img.naturalHeight));
+    canvas.width = Math.round(img.naturalWidth*ratio); canvas.height = Math.round(img.naturalHeight*ratio);
+    const ctx = canvas.getContext("2d"); ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+    ctx.strokeStyle = "white"; ctx.lineWidth = 2; ctx.font = "14px sans-serif";
+    state.identityFaces.forEach(face => {
+      const [x,y,w,h] = face.face_box;
+      ctx.strokeRect(x*canvas.width,y*canvas.height,w*canvas.width,h*canvas.height);
+      const label = String(face.index+1), left = Math.max(0,x*canvas.width), top = Math.max(16,y*canvas.height);
+      ctx.fillStyle = "black"; ctx.fillRect(left,top-16,20,18); ctx.fillStyle = "white"; ctx.fillText(label,left+4,top-2);
+    });
+    if (box) { ctx.lineWidth = 3; ctx.strokeRect(box[0]*canvas.width,box[1]*canvas.height,box[2]*canvas.width,box[3]*canvas.height); }
+    canvas.hidden = false;
+  }
+
+  async function previewIdentityBox(box) {
+    const img = state.identityImage;
+    if (!img) throw new Error("Upload an identity photograph first.");
+    if (box.some(n => !Number.isFinite(n)) || box[0] < 0 || box[1] < 0 || box[2] <= 0 || box[3] <= 0 || box[0]+box[2] > 1.000001 || box[1]+box[3] > 1.000001) throw new Error("Keep the complete head crop inside the photograph.");
+    const [x, y, w, h] = box;
+    const left = Math.round(x*img.naturalWidth), top = Math.round(y*img.naturalHeight);
+    const right = Math.min(img.naturalWidth, Math.round((x+w)*img.naturalWidth)), bottom = Math.min(img.naturalHeight, Math.round((y+h)*img.naturalHeight));
+    if (right-left < 64 || bottom-top < 64) throw new Error("Head crop must be at least 64 pixels wide and tall. Expand it or upload a closer photo.");
+    const version = state.identityVersion;
+    $("identityReviewed").checked = false;
+    state.identityBox = null;
+    const head = document.createElement("canvas"); head.width = right-left; head.height = bottom-top;
+    head.getContext("2d").drawImage(img, left, top, head.width, head.height, 0, 0, head.width, head.height);
+    const blob = await new Promise(resolve => head.toBlob(resolve, "image/png"));
+    if (version !== state.identityVersion || !blob) return;
+    if (state.identityHeadUrl) URL.revokeObjectURL(state.identityHeadUrl);
+    state.identityBox = box; state.identityHeadUrl = URL.createObjectURL(blob);
+    $("identityHeadPreview").src = state.identityHeadUrl; $("identityHeadPreview").hidden = false;
+    $("identityHeadOpen").href = state.identityHeadUrl; $("identityHeadOpen").hidden = false;
+    drawIdentityPhoto(box);
+    ["identityX", "identityY", "identityW", "identityH"].forEach((id, i) => { $(id).value = (box[i]*100).toFixed(2); });
+    updateRun();
+  }
+
+  async function prepareIdentityPhoto(file) {
+    const avif = file && (file.type === "image/avif" || (!file.type && /\.avif$/i.test(file.name)));
+    if (avif) {
+      if (file.size > 25 * 1024 * 1024) throw new Error("This AVIF exceeds 25 MB. Export a smaller photo and try again.");
+    } else validateFile(file);
+    let url = URL.createObjectURL(file);
+    try {
+      let img = await loadImage(url).catch(() => { throw new Error("This photo could not be opened. For unsupported AVIF files, export a PNG, JPEG or WebP copy."); });
+      if (img.naturalWidth * img.naturalHeight > 24000000 || Math.max(img.naturalWidth, img.naturalHeight) > 8192) throw new Error("Use a photo up to 24 megapixels and 8192 pixels per side.");
+      if (avif) {
+        const canvas = document.createElement("canvas");
+        canvas.width = img.naturalWidth; canvas.height = img.naturalHeight;
+        canvas.getContext("2d").drawImage(img, 0, 0);
+        const blob = await new Promise(resolve => canvas.toBlob(resolve, "image/png"));
+        if (!blob) throw new Error("AVIF conversion failed. Export a PNG copy and try again.");
+        file = new File([blob], file.name.replace(/\.avif$/i, "") + ".png", {type: "image/png", lastModified: file.lastModified});
+        validateFile(file);
+        URL.revokeObjectURL(url); url = URL.createObjectURL(file);
+        img = await loadImage(url);
+      }
+      return {file, url, img, avif};
+    } catch (error) { URL.revokeObjectURL(url); throw error; }
+  }
+
+  async function selectIdentity(file) {
+    if (state.identityBusy || state.jobId || state.batchId || state.submitting || state.enhancing) throw new Error("Wait for the current operation before replacing the identity photograph.");
+    clearErrors();
+    state.identityBusy = true; updateRun();
+    let prepared;
+    try { prepared = await prepareIdentityPhoto(file); }
+    catch (error) { state.identityBusy = false; updateRun(); throw error; }
+    const {url, img, avif} = prepared; file = prepared.file;
+    clearIdentity();
+    const version = ++state.identityVersion;
+    state.identity = file; state.identityUrl = url; state.identityImage = img; state.identityBusy = true;
+    drawIdentityPhoto();
+    $("identityFileLabel").textContent = file.name + (avif ? " · local PNG copy" : ""); $("identityRemove").hidden = false;
+    $("identityStatus").textContent = "Detecting faces locally on CPU…"; updateRun();
+    try {
+      const form = new FormData(); form.append("image", file);
+      const data = await api("/api/identity/analyze", {method: "POST", body: form});
+      if (version !== state.identityVersion) return;
+      state.identityFaces = data.candidates || [];
+      drawIdentityPhoto();
+      $("identityFace").replaceChildren(new Option("Select the intended face", ""));
+      state.identityFaces.forEach(face => $("identityFace").append(new Option(`Face ${face.index+1} · ${face.face_pixels.join(" × ")} px`, String(face.index))));
+      $("identityStatus").textContent = `${avif ? "AVIF converted locally; original unchanged. " : ""}${data.message} ${(data.warnings || []).join(" ")}`;
+      if (state.identityFaces.length === 1) {
+        $("identityFace").value = String(state.identityFaces[0].index);
+        await previewIdentityBox(state.identityFaces[0].head_box);
+      } else {
+        $("identityCropDetails").open = true;
+      }
+    } catch (error) {
+      if (version === state.identityVersion) {
+        $("identityStatus").textContent = `${error.message} You can use the manual head crop controls.`;
+        $("identityCropDetails").open = true;
+      }
+    } finally {
+      if (version === state.identityVersion) { state.identityBusy = false; updateRun(); }
+    }
+  }
+
   /* --- Event Listeners --- */
+  $("identityEnabled").addEventListener("change", () => {
+    $("identityControls").hidden = !$("identityEnabled").checked;
+    $("identityReviewed").checked = false; updateRun();
+  });
+  bindUpload("identityInput", "identityDrop", selectIdentity);
+  $("identityRemove").addEventListener("click", clearIdentity);
+  $("identityReviewed").addEventListener("change", updateRun);
+  $("identityContinue").addEventListener("click", () => {
+    if (!state.identityBox || !$("identityReviewed").checked || $("identityContinue").disabled) return;
+    getActivePromptTextarea().focus();
+  });
+  $("identityUseSource").addEventListener("click", () => { if (state.source) void selectIdentity(state.source).catch(error => showError(error.message)); });
+  $("identityFace").addEventListener("change", () => {
+    state.identityVersion++; state.identityBox = null; $("identityReviewed").checked = false;
+    $("identityHeadPreview").hidden = true; $("identityHeadOpen").hidden = true;
+    drawIdentityPhoto(); updateRun();
+    const face = state.identityFaces.find(face => String(face.index) === $("identityFace").value);
+    if (face) void previewIdentityBox(face.head_box).catch(error => showError(error.message));
+    else { $("identityHeadPreview").hidden = true; $("identityHeadOpen").hidden = true; drawIdentityPhoto(); updateRun(); }
+  });
+  ["identityX", "identityY", "identityW", "identityH"].forEach(id => $(id).addEventListener("input", () => {
+    state.identityVersion++; state.identityBox = null; $("identityReviewed").checked = false;
+    $("identityHeadPreview").hidden = true; $("identityHeadOpen").hidden = true; updateRun();
+    drawIdentityPhoto();
+  }));
+  $("identityApplyCrop").addEventListener("click", () => {
+    clearErrors();
+    const fields = ["identityX", "identityY", "identityW", "identityH"];
+    if (fields.some(id => !$(id).validity.valid || $(id).value === "")) { showError("Enter valid crop percentages first."); return; }
+    void previewIdentityBox(fields.map(id => Number($(id).value)/100)).catch(error => showError(error.message));
+  });
   $("poseEnabled").addEventListener("change", () => {
     $("poseControls").hidden = !$("poseEnabled").checked;
     $("poseReviewed").checked = false;
@@ -1343,18 +1596,25 @@
     invalidateMask();
   });
   const repairHints = {
+    face: "Enable Identity Assist and approve the intended person's head crop. Paint the face with enough head/neck context; preserve the requested head angle and expression. Ultra uses a focused crop for this repair. One reviewed repair, not an automatic retry loop.",
     hand: "Paint the faulty hand, wrist and enough adjoining forearm to reconnect it. Review hidden and overlapping fingers; do not force a visible finger count.",
     leg: "Paint the faulty leg/foot and connected knee or hip context. For movement include both limb positions and exposed background.",
     contact: "Paint both interacting regions and their contact point, including connected limbs and exposed background."
   };
-  $("repairKind").addEventListener("change", () => { $("repairHint").textContent = repairHints[$("repairKind").value]; invalidateMask(); });
-  $("cancelRepair").addEventListener("click", () => { state.repairParent = null; $("repairControls").hidden = true; });
+  $("repairKind").addEventListener("change", () => {
+    $("repairHint").textContent = repairHints[$("repairKind").value];
+    $("identityEnabled").checked = $("repairKind").value === "face";
+    $("identityReviewed").checked = false; syncIdentitySection(); updateRun(); invalidateMask();
+  });
+  $("cancelRepair").addEventListener("click", () => { state.repairParent = null; $("repairControls").hidden = true; syncIdentitySection(); updateRun(); });
   $("repairResult").addEventListener("click", async () => {
     if (!state.result?.job_id || state.jobId || state.batchId || state.enhancing || state.submitting) return;
     const selected = {...state.result};
     try {
       await imageToSource(selected.image_url);
       state.repairParent = selected.job_id;
+      $("identityEnabled").checked = $("repairKind").value === "face";
+      syncIdentitySection();
       $("poseEnabled").checked = false; $("poseControls").hidden = true;
       $("preserve").checked = true; $("editRegion").value = "manual";
       $("repairControls").hidden = false; $("manualMaskDetails").open = true;
@@ -1369,10 +1629,13 @@
   document.querySelectorAll("[data-task]").forEach(button => {
     button.addEventListener("click", () => chooseTask(button.dataset.task));
     button.addEventListener("keydown", event => {
-      if (["ArrowLeft", "ArrowRight"].includes(event.key)) {
+      if (["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key) && !button.disabled) {
         event.preventDefault();
-        chooseTask(state.task === "generate" ? "edit" : "generate");
-        $(state.task === "edit" ? "editTab" : "createTab").focus();
+        const tabs = [...document.querySelectorAll("[data-task]")];
+        const current = tabs.indexOf(button);
+        const index = event.key === "Home" ? 0 : event.key === "End" ? tabs.length-1
+          : (current + (event.key === "ArrowRight" ? 1 : -1) + tabs.length) % tabs.length;
+        chooseTask(tabs[index].dataset.task); tabs[index].focus();
       }
     });
   });
@@ -1421,6 +1684,10 @@
     if ($("loraStrengthContainer")) {
       $("loraStrengthContainer").classList.toggle("disabled", !$("loraToggle").checked);
     }
+    savePreference();
+  });
+  $("loraSelect")?.addEventListener("change", () => {
+    state.loraName = $("loraSelect").value;
     savePreference();
   });
   $("loraStrength")?.addEventListener("input", () => {
@@ -1651,9 +1918,10 @@
     event.preventDefault();
     document.body.classList.remove("window-dragging");
     const file = event.dataTransfer?.files?.[0];
+    if (state.jobId || state.batchId || state.submitting || state.enhancing || state.identityBusy) return;
     if (file && (file.type.startsWith("image/") || /\.(png|jpe?g|webp)$/i.test(file.name))) {
-      chooseTask("edit");
-      setSource(file);
+      if (state.workflow === "restyle") void selectIdentity(file).catch(error => showError(error.message));
+      else { chooseTask("edit"); void setSource(file).catch(error => showError(error.message)); }
     }
   });
 
@@ -1669,8 +1937,8 @@
       $("downloadImage").click();
     } else if ((event.ctrlKey || event.metaKey) && (event.key === "o" || event.key === "O") && !event.shiftKey) {
       event.preventDefault();
-      chooseTask("edit");
-      $("sourceInput").click();
+      if (state.workflow === "restyle") $("identityInput").click();
+      else { chooseTask("edit"); $("sourceInput").click(); }
     }
   });
 
@@ -1705,6 +1973,7 @@
         $("loraStrength").value = saved.lora_strength;
         if ($("loraStrengthVal")) $("loraStrengthVal").textContent = Number(saved.lora_strength).toFixed(2);
       }
+      if (saved.lora_name) state.loraName = saved.lora_name;
       if ($("loraStrengthContainer") && $("loraToggle")) {
         $("loraStrengthContainer").classList.toggle("disabled", !$("loraToggle").checked);
       }

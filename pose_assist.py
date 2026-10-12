@@ -7,7 +7,7 @@ from PIL import Image
 import prompt_intent
 
 ROOT = Path(__file__).resolve().parent
-REPAIR_KINDS = {"none", "hand", "leg", "contact"}
+REPAIR_KINDS = {"none", "face", "hand", "leg", "contact"}
 
 
 def interpretation(prompt):
@@ -58,7 +58,8 @@ def compile_pose(prompt, *, task, pose_slot=2, appearance_slots=(), order="same"
 
 
 def repair_guidance(kind):
-    return {"hand": "Review a mask covering the faulty hand, wrist and enough adjacent forearm/context to reconnect it. Do not enforce a visible finger count on hidden or overlapping fingers.",
+    return {"face": "Review a mask covering the face and necessary head/neck context. Use an approved identity reference; preserve the requested expression and head angle. Pixels outside the mask stay protected, not the regenerated face.",
+            "hand": "Review a mask covering the faulty hand, wrist and enough adjacent forearm/context to reconnect it. Do not enforce a visible finger count on hidden or overlapping fingers.",
             "leg": "Review the faulty leg/foot and enough adjoining knee/hip context. Include old and new limb silhouettes and exposed background if it moves.",
             "contact": "Review both interacting regions and their contact point. Include connected limbs and exposed background; a chest contact cannot be fixed with a finger-only mask.",
             "none": ""}[kind]

@@ -30,6 +30,7 @@ from model_sessions import ModelSessions
 import prompt_intent
 import pose_prompting
 import pose_assist
+import identity_assist
 
 PROJECT_DIR = Path(__file__).resolve().parent
 OUTPUT_DIR = str(PROJECT_DIR / "outputs")
@@ -188,6 +189,7 @@ class GenerateRequest(BaseModel):
     enhance_prompt: bool = False
     lora_enabled: bool = True
     lora_strength: float = Field(default=0.8, ge=0.0, le=2.0)
+    lora_name: str = Field(default="", max_length=200)
 
     @field_validator("prompt")
     @classmethod
@@ -208,6 +210,7 @@ class EnhanceRequest(BaseModel):
     model: Optional[Literal["dolphin", "qwen", "qwen21-dolphin", "qwen3.5:4b-q4_K_M", "qwen21-qwen4b", "qwen27b"]] = None
     enhancement_style: Literal["describe", "polish"] = "describe"
     pose_assist: bool = False
+    identity_assist: bool = False
 
     @field_validator("prompt")
     @classmethod
@@ -245,8 +248,11 @@ def save_image(image, label):
     return path, f"/outputs/{filename}"
 
 
-def compile_prompt(instruction, target="global", preserve=True, transparent=False, reference=False, clean_prompt=False, pose_enabled=False, pose_order="same", task="edit", repair_kind="none"):
+def compile_prompt(instruction, target="global", preserve=True, transparent=False, reference=False, clean_prompt=False, pose_enabled=False, pose_order="same", task="edit", repair_kind="none", identity_enabled=False):
     text = instruction.strip()
+    if identity_enabled:
+        text = identity_assist.compile_identity(text, task=task, pose_enabled=pose_enabled, pose_order=pose_order)
+        return ("Produce native RGBA output with a transparent background. " if transparent else "") + text
     if pose_enabled:
         text = pose_assist.compile_pose(text, task=task, pose_slot=2,
             appearance_slots=tuple(range(3, int(reference) + 2)), order=pose_order)
@@ -458,15 +464,17 @@ def capabilities():
     enhancer.update(profile=dolphin.PROFILE_VERSION, image_understanding=False,
                     detail_profile=dolphin.DETAIL_PROFILE,
                     intent_checks="actions, body regions and anatomical left/right; lexical only")
-    lora_file = Path("ComfyUI_windows_portable/ComfyUI/models/loras") / engine.LORA_NAME
+    lora_file = LORA_DIR / engine.LORA_NAME
     lora_status = {
         "installed": lora_file.exists(),
         "name": engine.LORA_NAME,
         "recommended_strength": 0.8,
         "candidate": "TheseAlpacas V2",
+        "available": available_loras(),
     }
     return {"modes": engine.mode_info(), "backend": backend, "enhancer": enhancer, "segmentation": regions.segmenter_status(),
             "pose_assist": pose_assist.capabilities(),
+            "identity_assist": identity_assist.capabilities(),
             "max_reference_images": 3, "max_upload_mb": 25, "lora": lora_status,
             "pose_guidance": {"enabled": pose_prompting.enabled(), "scope": "soft human-pose prompting; rendered anatomy is not verified"}}
 
@@ -479,6 +487,17 @@ def enhance_endpoint(req: EnhanceRequest):
 @app.post("/api/intent")
 def interpret_endpoint(req: EnhanceRequest):
     return pose_assist.interpretation(req.prompt)
+
+
+@app.post("/api/identity/analyze")
+async def identity_analyze(image: UploadFile = File(...)):
+    source = open_image(await image.read(25 * 1024 * 1024 + 1))
+    try:
+        return await asyncio.to_thread(identity_assist.detect, source)
+    except (ImportError, RuntimeError) as exc:
+        raise HTTPException(503, "CPU face detection is unavailable. Use manual head crop controls or install the local Identity Assist models.") from exc
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
 
 
 @app.post("/api/mask")
@@ -517,8 +536,28 @@ def _run_comfy_workflow(nodes):
     return f"/outputs/{filename}"
 
 
-def generate_live_ai_image(prompt, aspect_ratio="1:1", seed=42, enhance=False, num_steps=None, mode="balanced", lora_enabled=True, lora_strength=0.8):
-    lora = engine.LORA_NAME if lora_enabled else None
+LORA_DIR = Path("ComfyUI_windows_portable/ComfyUI/models/loras")
+
+
+def available_loras() -> list[str]:
+    """LoRA files that can be selected in the Studio."""
+    if not LORA_DIR.is_dir():
+        return []
+    return sorted(p.name for p in LORA_DIR.iterdir() if p.is_file() and p.suffix.lower() == ".safetensors")
+
+
+def resolve_lora(name: str | None) -> str:
+    """Map a requested LoRA to an installed file; empty means the default. Unknown names are rejected."""
+    name = (name or "").strip()
+    if not name:
+        return engine.LORA_NAME
+    if name not in available_loras():
+        raise ValueError(f"LoRA not installed: {name}")
+    return name
+
+
+def generate_live_ai_image(prompt, aspect_ratio="1:1", seed=42, enhance=False, num_steps=None, mode="balanced", lora_enabled=True, lora_strength=0.8, lora_name=""):
+    lora = resolve_lora(lora_name) if lora_enabled else None
     return _run_comfy_workflow(engine.build_workflow(prompt, mode=mode, seed=seed, aspect_ratio=aspect_ratio, steps=num_steps, lora_name=lora, lora_strength=lora_strength))
 
 
@@ -533,9 +572,12 @@ async def generate_endpoint(req: GenerateRequest):
     def run():
         with RESOURCE_LOCK:
             return generate_live_ai_image(prompt, aspect_ratio, req.seed, False, req.num_steps, req.mode,
-                                          lora_enabled=req.lora_enabled, lora_strength=req.lora_strength)
+                                          lora_enabled=req.lora_enabled, lora_strength=req.lora_strength,
+                                          lora_name=req.lora_name)
     try:
         url = await asyncio.to_thread(run)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
     except ImageGenerationError as exc:
         raise HTTPException(502, str(exc)) from exc
     return {"status": "success", "image_url": url, "mode": req.mode, "aspect_ratio": aspect_ratio}
@@ -545,14 +587,29 @@ async def prepare_request(task, prompt, mode, aspect_ratio, seed, num_steps, tra
                           region, image, mask, reference, references,
                           lora_enabled: bool = True, lora_strength: float = 0.8,
                           pose_enabled=False, pose_reference=None, pose_reviewed=False, pose_order="same",
-                          mask_reviewed=False, repair_kind="none", repair_parent_id=""):
+                          mask_reviewed=False, repair_kind="none", repair_parent_id="", lora_name="",
+                          identity_enabled=False, identity_reference=None, identity_reviewed=False, identity_box=""):
+    lora_name = resolve_lora(lora_name)
     settings = GenerateRequest(prompt=prompt, mode=mode, aspect_ratio=aspect_ratio, seed=seed,
                                num_steps=num_steps, is_transparent=transparent,
-                               lora_enabled=lora_enabled, lora_strength=lora_strength)
+                               lora_enabled=lora_enabled, lora_strength=lora_strength, lora_name=lora_name)
     if task not in ("generate", "edit"):
         raise HTTPException(422, "Choose Generate or Edit")
     if task == "edit" and not image:
         raise HTTPException(422, "Choose a source image to edit")
+    identity_photo = identity_head = None
+    if identity_enabled:
+        if not identity_reference or not identity_reviewed:
+            raise HTTPException(422, "Upload an identity photograph, select a head crop and approve its preview first")
+        if task == "generate" and image:
+            raise HTTPException(422, "Create uses the identity photograph; choose Edit to supply a separate scene")
+        if reference or references:
+            raise HTTPException(422, "Identity Assist reserves reference slots for the head crop and optional pose. Remove the appearance reference or disable Identity Assist.")
+        identity_photo = open_image(await identity_reference.read(25 * 1024 * 1024 + 1))
+        try:
+            identity_head = identity_assist.crop_head(identity_photo, json.loads(identity_box))
+        except (ValueError, TypeError) as exc:
+            raise HTTPException(422, str(exc)) from exc
     if task == "generate" and pose_enabled and image:
         raise HTTPException(422, "Choose Edit to use an original or identity image with Pose Assist")
     if pose_order not in {"same", "swap"} or repair_kind not in pose_assist.REPAIR_KINDS:
@@ -562,6 +619,8 @@ async def prepare_request(task, prompt, mode, aspect_ratio, seed, num_steps, tra
     if pose_enabled and mask is not None and not mask_reviewed:
         raise HTTPException(422, "Review the movement mask, including moved limbs and exposed background")
     if repair_kind != "none":
+        if repair_kind == "face" and not identity_enabled:
+            raise HTTPException(422, "Face likeness repair requires an approved Identity Assist head crop")
         if task != "edit" or not preserve or mask is None or not mask_reviewed or region != "manual":
             raise HTTPException(422, "A repair requires Edit mode, protected pixels and an approved custom mask with joint/contact context")
         if not re.fullmatch(r"[0-9a-f]{32}", repair_parent_id):
@@ -587,6 +646,9 @@ async def prepare_request(task, prompt, mode, aspect_ratio, seed, num_steps, tra
         else:
             raise HTTPException(422, "This action changes pose or contact. Choose Whole image (Global edit), or paint a mask covering all moved limbs, contact regions and exposed background. A clothes/accessory mask cannot perform this action safely.")
     source = open_image(await image.read(25 * 1024 * 1024 + 1)) if image else None
+    if task == "generate" and identity_enabled:
+        source = identity_photo
+        preserve = False
     if repair_kind != "none":
         parent_path = Path(OUTPUT_DIR) / f"qwen_{repair_parent_id}.png"
         if not parent_path.is_file():
@@ -597,6 +659,8 @@ async def prepare_request(task, prompt, mode, aspect_ratio, seed, num_steps, tra
     source_path = source_url = mask_path = mask_url = None
     if source:
         source_path, source_url = save_image(source, "source")
+        if task == "generate" and identity_enabled:
+            source_url = None
     elif pose_enabled:
         width, height = engine.generation_dimensions(mode, aspect_ratio)
         source_path, _ = save_image(Image.new("RGB", (width, height), "white"), "pose_canvas")
@@ -633,6 +697,10 @@ async def prepare_request(task, prompt, mode, aspect_ratio, seed, num_steps, tra
     if refs and task != "edit":
         raise HTTPException(422, "Additional references are available in Edit mode")
     reference_paths = []
+    identity_head_path = None
+    if identity_enabled:
+        identity_head_path, _ = save_image(identity_head, "identity_head")
+        reference_paths.append(str(identity_head_path))
     if pose_enabled:
         pose_image = open_image(await pose_reference.read(25 * 1024 * 1024 + 1))
         pose_path, _ = save_image(pose_image, "pose_reference")
@@ -647,8 +715,11 @@ async def prepare_request(task, prompt, mode, aspect_ratio, seed, num_steps, tra
             "seed": seed, "num_steps": num_steps, "transparent": transparent, "preserve": preserve,
             "region": target, "source_path": str(source_path) if source_path else None, "source_url": source_url,
             "mask_path": str(mask_path) if mask_path else None, "mask_url": mask_url, "reference_paths": reference_paths,
-            "lora_enabled": lora_enabled, "lora_strength": lora_strength,
+            "lora_enabled": lora_enabled, "lora_strength": lora_strength, "lora_name": lora_name,
             "pose_enabled": pose_enabled, "pose_reviewed": pose_reviewed, "pose_order": pose_order,
+            "identity_enabled": identity_enabled, "identity_reviewed": identity_reviewed,
+            "identity_head_path": str(identity_head_path) if identity_head_path else None,
+            "reference_only": task == "generate" and identity_enabled,
             "repair_kind": repair_kind, "repair_parent_id": repair_parent_id}
 
 
@@ -661,18 +732,22 @@ async def submit_job(
     is_transparent: bool = Form(False), preserve: bool = Form(True), region: str = Form("auto"),
     image: Optional[UploadFile] = File(None), mask: Optional[UploadFile] = File(None),
     reference: Optional[UploadFile] = File(None), references: Optional[list[UploadFile]] = File(None),
-    lora_enabled: bool = Form(True), lora_strength: float = Form(0.8),
+    lora_enabled: bool = Form(True), lora_strength: float = Form(0.8), lora_name: str = Form("", max_length=200),
     pose_enabled: bool = Form(False), pose_reference: Optional[UploadFile] = File(None),
     pose_reviewed: bool = Form(False), pose_order: Literal["same", "swap"] = Form("same"),
-    mask_reviewed: bool = Form(False), repair_kind: Literal["none", "hand", "leg", "contact"] = Form("none"),
+    mask_reviewed: bool = Form(False), repair_kind: Literal["none", "face", "hand", "leg", "contact"] = Form("none"),
     repair_parent_id: str = Form("", max_length=32),
+    identity_enabled: bool = Form(False), identity_reference: Optional[UploadFile] = File(None),
+    identity_reviewed: bool = Form(False), identity_box: str = Form("", max_length=200),
 ):
     try:
         request = await prepare_request(task, prompt, mode, aspect_ratio, seed, num_steps,
             is_transparent, preserve, region, image, mask, reference, references,
-            lora_enabled=lora_enabled, lora_strength=lora_strength,
+            lora_enabled=lora_enabled, lora_strength=lora_strength, lora_name=lora_name,
             pose_enabled=pose_enabled, pose_reference=pose_reference, pose_reviewed=pose_reviewed,
-            pose_order=pose_order, mask_reviewed=mask_reviewed, repair_kind=repair_kind, repair_parent_id=repair_parent_id)
+            pose_order=pose_order, mask_reviewed=mask_reviewed, repair_kind=repair_kind, repair_parent_id=repair_parent_id,
+            identity_enabled=identity_enabled, identity_reference=identity_reference,
+            identity_reviewed=identity_reviewed, identity_box=identity_box)
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
     job_id = uuid.uuid4().hex
@@ -709,10 +784,13 @@ async def submit_batch(
     references: Optional[list[UploadFile]] = File(None),
     lora_enabled: bool = Form(True),
     lora_strength: float = Form(0.8),
+    lora_name: str = Form("", max_length=200),
     pose_enabled: bool = Form(False), pose_reference: Optional[UploadFile] = File(None),
     pose_reviewed: bool = Form(False), pose_order: Literal["same", "swap"] = Form("same"),
-    mask_reviewed: bool = Form(False), repair_kind: Literal["none", "hand", "leg", "contact"] = Form("none"),
+    mask_reviewed: bool = Form(False), repair_kind: Literal["none", "face", "hand", "leg", "contact"] = Form("none"),
     repair_parent_id: str = Form("", max_length=32),
+    identity_enabled: bool = Form(False), identity_reference: Optional[UploadFile] = File(None),
+    identity_reviewed: bool = Form(False), identity_box: str = Form("", max_length=200),
 ):
     try:
         raw_prompts = json.loads(prompts) if prompts.strip().startswith("[") else [p.strip() for p in prompts.split("\n")]
@@ -736,9 +814,11 @@ async def submit_batch(
         base_request = await prepare_request(
             task, clean_prompts[0], mode, aspect_ratio, seed, num_steps,
             is_transparent, preserve, region, image, mask, reference, references,
-            lora_enabled=lora_enabled, lora_strength=lora_strength,
+            lora_enabled=lora_enabled, lora_strength=lora_strength, lora_name=lora_name,
             pose_enabled=pose_enabled, pose_reference=pose_reference, pose_reviewed=pose_reviewed,
-            pose_order=pose_order, mask_reviewed=mask_reviewed
+            pose_order=pose_order, mask_reviewed=mask_reviewed,
+            identity_enabled=identity_enabled, identity_reference=identity_reference,
+            identity_reviewed=identity_reviewed, identity_box=identity_box
         )
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
@@ -854,7 +934,7 @@ def cancel_batch(batch_id: str):
 def public_job(job):
     job = dict(job)
     req = dict(job.get("request", {}))
-    for key in ("source_path", "mask_path", "reference_paths"):
+    for key in ("source_path", "mask_path", "reference_paths", "identity_head_path"):
         req.pop(key, None)
     # SECURITY: Never return the user's prompt via GET or public endpoints
     req["prompt"] = "[Protected]"
@@ -934,7 +1014,7 @@ def process_job(job_id, cancel):
             if req["mask_path"]:
                 with Image.open(req["mask_path"]) as im:
                     mask = im.convert("L")
-            crop = regions.crop_bounds(mask, context=.5 if req.get("repair_kind", "none") != "none" else .35) if source and mask and req["mode"] == "ultra" and not req.get("pose_enabled") else None
+            crop = regions.crop_bounds(mask, context=.5 if req.get("repair_kind", "none") != "none" else .35) if source and mask and req["mode"] == "ultra" and not req.get("pose_enabled") and (not req.get("identity_enabled") or req.get("repair_kind") == "face") else None
             working = source.crop(crop) if crop else source
             inputs = [working] if working else []
             for ref in req["reference_paths"]:
@@ -951,7 +1031,7 @@ def process_job(job_id, cancel):
             compiled = compile_prompt(prompt_text, req["region"], preserve=bool(source and req["preserve"]),
                                       transparent=req["transparent"], reference=max(0, len(names)-1),
                                       clean_prompt=clean, pose_enabled=req.get("pose_enabled", False),
-                                      pose_order=req.get("pose_order", "same"), task=req["task"], repair_kind=req.get("repair_kind", "none"))
+                                      pose_order=req.get("pose_order", "same"), task=req["task"], repair_kind=req.get("repair_kind", "none"), identity_enabled=req.get("identity_enabled", False))
             mask_name = None
             if mask:
                 sampling_mask = mask.crop(crop) if crop else mask
@@ -959,13 +1039,13 @@ def process_job(job_id, cancel):
                 sampling_mask.save(dest)
                 uploaded.append(dest)
                 mask_name = f"studio_uploads/{dest.name}"
-            lora_name = engine.LORA_NAME if req.get("lora_enabled", True) else None
+            lora_name = resolve_lora(req.get("lora_name")) if req.get("lora_enabled", True) else None
             lora_strength = float(req.get("lora_strength", 0.8))
             workflow = engine.build_workflow(compiled, mode=req["mode"], seed=req["seed"],
                 aspect_ratio=req["aspect_ratio"], steps=req["num_steps"],
                 source_name=names[0] if names else None, source_size=working.size if working else None,
                 source_has_alpha=alpha_flags[0] if names else False, reference_names=tuple(names[1:]), mask_name=mask_name,
-                lora_name=lora_name, lora_strength=lora_strength)
+                lora_name=lora_name, lora_strength=lora_strength, reference_only=req.get("reference_only", False))
 
             stage_clock = time.monotonic()
             active_stage = "preparing"
@@ -1032,6 +1112,17 @@ def process_job(job_id, cancel):
             metadata["pose_assist"] = {"enabled": req.get("pose_enabled", False), "route": "native_reference" if req.get("pose_enabled") else "none",
                 "reviewed": req.get("pose_reviewed", False), "anatomy_verified": False}
             metadata["repair"] = {"kind": req.get("repair_kind", "none"), "parent_id": req.get("repair_parent_id", ""), "automatic": False}
+            if req.get("identity_enabled"):
+                update_job(job_id, phase="Checking face likeness on CPU")
+                try:
+                    with Image.open(req["identity_head_path"]) as head:
+                        likeness = identity_assist.similarity(head, generated)
+                except Exception:
+                    likeness = {"status": "not_measured", "advisory": True, "reason": "CPU likeness check could not complete; review the face visually."}
+                metadata["identity_assist"] = {"enabled": True, "reviewed": req.get("identity_reviewed", False),
+                    "route": "native_reference", "reference_roles": ["identity photograph" if req["task"] == "generate" else "source scene", "selected identity head crop"] + (["pose only"] if req.get("pose_enabled") else []),
+                    "exact_likeness_guaranteed": False, "likeness": likeness}
+                metadata["warnings"].append("Identity Assist provides image-reference guidance, not an exact face lock. Check likeness, requested action and anatomy. Similarity scores do not certify a result.")
             if req.get("pose_enabled"):
                 metadata["warnings"].append("Pose Assist is native image-reference guidance, not ControlNet. Review identity, pose, contact and anatomy; reference matching is not guaranteed.")
             if source and not protected:

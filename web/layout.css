@@ -19,8 +19,9 @@
 .header-tools > .text-button, .comfy-link { min-height: 32px; display: inline-flex; align-items: center; white-space: nowrap; }
 .comfy-link { gap: 4px; }
 
-.task-tabs { margin: var(--app-gutter) var(--app-gutter) 0; }
-.task-tab { min-height: 42px; padding: 10px 12px; font-size: var(--app-control-size); font-weight: 500; line-height: 1.4; }
+.task-tabs { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); margin: var(--app-gutter) var(--app-gutter) 0; }
+.task-tab { min-width: 0; min-height: 54px; padding: 8px 5px; font-size: var(--app-control-size); font-weight: 500; line-height: 1.4; }
+.workflow-hint { margin: 0; }
 .control-body { gap: var(--app-section-gap); padding: var(--app-gutter); }
 .control-body > *, .prompt-section, .prompt-card { min-width: 0; }
 .label-row { align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 10px; }
@@ -137,3 +138,14 @@ summary { min-height: 28px; font-size: var(--app-control-size); line-height: 1.5
 #poseOpen { margin-right: 12px; }
 #poseControls > select, #poseControls > label { margin-top: 10px; }
 #repairResult { margin-top: 12px; }
+.identity-preview { display: block; width: 100%; max-height: 220px; object-fit: contain; margin: 12px 0; }
+#identityControls { min-width: 0; }
+#identityControls > label[for="identityFace"] { display: block; margin-top: 12px; }
+#identityControls > .text-button { margin-right: 12px; }
+.identity-crop-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin: 12px 0; }
+.identity-crop-grid input { width: 100%; min-width: 0; }
+.identity-studio { padding-top: 0; }
+.identity-studio > summary { display: list-item; }
+.identity-studio-title { font-weight: 600; }
+.identity-studio > summary .muted { display: block; margin-top: 2px; }
+#identityContinue { margin-top: 12px; }
