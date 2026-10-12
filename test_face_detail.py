@@ -121,6 +121,14 @@ class FaceDetailTests(unittest.TestCase):
         self.assertIn("images.image_2", wf["5"]["inputs"])
         self.assertIn("head_swap:", wf["5"]["inputs"]["prompt"])
 
+    def test_adaptive_denoise_scales_with_face_size(self):
+        # Micro face (<64px)
+        self.assertAlmostEqual(face_detail.adaptive_denoise((50, 60)), 0.66, places=2)
+        # Medium face (64 - 160px)
+        self.assertAlmostEqual(face_detail.adaptive_denoise((100, 120)), 0.62, places=2)
+        # Large face (>160px)
+        self.assertAlmostEqual(face_detail.adaptive_denoise((200, 220)), 0.52, places=2)
+
 
 if __name__ == '__main__':
     unittest.main()

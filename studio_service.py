@@ -32,6 +32,7 @@ import pose_prompting
 import pose_assist
 import identity_assist
 import face_detail
+import face_restore
 
 PROJECT_DIR = Path(__file__).resolve().parent
 OUTPUT_DIR = str(PROJECT_DIR / "outputs")
@@ -1169,13 +1170,13 @@ def process_job(job_id, cancel):
                             compiled_detail = face_detail.prompt(prompt_text, use_bfs_head=True)
                             lora_crop = BFS_HEAD_LORA
                             lora_strength_crop = 1.0
-                            crop_denoise = 0.65
+                            crop_denoise = face_detail.adaptive_denoise(detail_plan["face_px"])
                         else:
                             detail_instruction = face_detail.prompt(prompt_text, use_bfs_head=False)
                             compiled_detail = identity_assist.compile_identity(detail_instruction, task="edit")
                             lora_crop = None
                             lora_strength_crop = 0.0
-                            crop_denoise = 0.55
+                            crop_denoise = max(0.40, face_detail.adaptive_denoise(detail_plan["face_px"]) - 0.08)
 
                         crop_workflow = engine.build_workflow(
                             compiled_detail,
@@ -1209,6 +1210,15 @@ def process_job(job_id, cancel):
                                 pass
                             CLIENT.wipe_history()
 
+                        restoration_used = "none"
+                        if face_restore.is_available():
+                            update_job(job_id, phase="Restoring micro-features")
+                            try:
+                                refined_crop = face_restore.restore_face(refined_crop, fidelity=0.8)
+                                restoration_used = "codeformer"
+                            except Exception as restore_err:
+                                logging.warning(f"Face restore failed, continuing with unenhanced crop: {restore_err}")
+
                         generated = face_detail.composite(generated, refined_crop, detail_plan)
                         metadata["face_detail"] = {
                             "applied": True,
@@ -1216,6 +1226,8 @@ def process_job(job_id, cancel):
                             "face_px": detail_plan["face_px"],
                             "crop_box": detail_plan["crop_box"],
                             "denoise": crop_denoise,
+                            "restoration": restoration_used,
+                            "landmark_aligned": detail_plan.get("landmark_aligned", False),
                             "base_image_url": f"/outputs/{base_filename}",
                         }
                     else:

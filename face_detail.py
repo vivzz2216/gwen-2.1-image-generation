@@ -137,6 +137,21 @@ def plan(image_size: tuple[int, int], faces: list[dict]) -> dict | None:
         "work_face_center": (fcx_work, fcy_work),
     }
 
+def adaptive_denoise(face_px: tuple[int, int] | list[int]) -> float:
+    """Return optimal inpainting denoise strength based on detected face size.
+
+    Micro faces (<64px) need slightly higher regeneration leeway (0.66) to reconstruct structure.
+    Medium faces (64-160px) balance identity and pose adaptation (0.62).
+    Larger faces (>160px) need lower denoise (0.52) to avoid hallucinating novel features.
+    """
+    min_dim = min(face_px) if face_px else 64
+    if min_dim < 64:
+        return 0.66
+    elif min_dim < 160:
+        return 0.62
+    else:
+        return 0.52
+
 
 def prompt(user_prompt: str, use_bfs_head: bool = False) -> str:
     """Compose the refinement instruction for the face detail inpainting pass."""
