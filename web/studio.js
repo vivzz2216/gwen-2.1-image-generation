@@ -1244,6 +1244,7 @@
     form.append("pose_reviewed", String($("poseReviewed").checked));
     form.append("pose_order", $("poseOrder").value);
     form.append("identity_enabled", String(useIdentity));
+    form.append("face_detail", String(Boolean($("faceDetailEnabled")?.checked)));
     if (useIdentity) {
       form.append("identity_reference", state.identity);
       form.append("identity_reviewed", String($("identityReviewed").checked));
@@ -1368,9 +1369,20 @@
     }
 
     const sourceUrl = localImageUrl(result.source_url || metadata.source_url);
-    const hasBefore = !!sourceUrl;
+    const baseFaceUrl = localImageUrl(metadata.face_detail?.base_image_url);
+    const hasBefore = !!sourceUrl || !!baseFaceUrl;
     $("beforeImage").hidden = $("beforeBadge").hidden = $("afterBadge").hidden = $("comparisonLine").hidden = $("comparisonControls").hidden = !hasBefore;
-    if (sourceUrl) $("beforeImage").src = sourceUrl;
+    if (baseFaceUrl) {
+      $("beforeImage").src = baseFaceUrl;
+      $("beforeBadge").textContent = "Unsharpened";
+      $("afterBadge").textContent = "Sharpened";
+    } else if (sourceUrl) {
+      $("beforeImage").src = sourceUrl;
+      $("beforeBadge").textContent = "Original";
+      $("afterBadge").textContent = "Edited";
+    }
+    const canSharpen = !!state.result.job_id && !!metadata.identity_assist?.enabled && !metadata.face_detail?.applied;
+    if ($("sharpenFaceBtn")) $("sharpenFaceBtn").hidden = !canSharpen;
     $("toggleCompare").setAttribute("aria-pressed", "true");
     $("toggleCompare").textContent = "Hide original";
     $("compareRange").value = 50;
@@ -1818,6 +1830,14 @@
   $("editResult").addEventListener("click", () => {
     clearErrors();
     if (state.result) void imageToSource(state.result.image_url).catch(error => showError(error.message));
+  });
+
+  $("sharpenFaceBtn")?.addEventListener("click", () => {
+    if (!state.result?.job_id) return;
+    clearErrors();
+    state.repairParent = state.result.job_id;
+    if ($("repairKind")) $("repairKind").value = "face_detail";
+    $("studioForm").requestSubmit();
   });
 
   $("downloadAllBtn").addEventListener("click", () => {

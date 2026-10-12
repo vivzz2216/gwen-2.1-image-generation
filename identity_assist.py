@@ -90,6 +90,23 @@ def detect(image):
             'warnings': ['Small faces carry little detail; use a closer photograph.'] if any(min(c['face_pixels']) < 64 for c in candidates) else [],
             'message': 'Select and review the intended head crop.' if candidates else 'No clear face detected. Adjust a manual crop or use a sharper photograph.'}
 
+def face_boxes(image):
+    with CPU_LOCK:
+        try:
+            _, faces = _detect(image)
+        except Exception:
+            return []
+    boxes = []
+    for face in faces:
+        x, y, width, height = map(float, face[:4])
+        boxes.append({
+            'box': (x, y, width, height),
+            'confidence': round(float(face[-1]), 3),
+            'width': round(width),
+            'height': round(height),
+        })
+    return boxes
+
 def similarity(reference_head, result):
     """Score all detected output faces; never label a biometric match as a pass."""
     if not capabilities()['cpu_similarity']:

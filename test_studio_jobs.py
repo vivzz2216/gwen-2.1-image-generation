@@ -191,6 +191,109 @@ class JobTests(unittest.TestCase):
         for jid in data["job_ids"]:
             service.CANCEL_EVENTS.pop(jid, None)
 
+    @patch.object(service.EXECUTOR, "submit")
+    @patch.object(service.identity_assist, "face_boxes")
+    @patch.object(service.identity_assist, "similarity", return_value={"status": "measured", "faces": [{"cosine_similarity": 0.85}]})
+    def test_face_detail_runs_for_small_face(self, similarity, face_boxes, submit):
+        import json
+        calls = []
+        def mock_run(workflow, **kwargs):
+            p = Path(self.temp.name) / f"mock_{len(calls)}.png"
+            Image.new("RGB", (896, 672), (120, 140, 160)).save(p)
+            calls.append(workflow)
+            return p
+
+        with patch.object(service.CLIENT, "run", side_effect=mock_run):
+            face_boxes.return_value = [{'box': (400, 60, 50, 60), 'width': 50, 'height': 60}]
+            response = self.client.post("/api/jobs", data={
+                "task": "generate", "prompt": "Riding a bicycle", "identity_enabled": "true",
+                "identity_reviewed": "true", "identity_box": "[0.2, 0.1, 0.5, 0.5]",
+                "face_detail": "true", "mode": "fast", "lora_enabled": "false"
+            }, files={"identity_reference": ("identity.png", bitmap(), "image/png")})
+            self.assertEqual(response.status_code, 202)
+            job_id = response.json()["job_id"]
+            # Process job synchronously with event
+            event = service.CANCEL_EVENTS[job_id]
+            service.process_job(job_id, event)
+
+            job = service.get_job(job_id)
+            self.assertEqual(job["status"], "succeeded")
+            # Should have called CLIENT.run twice: 1 initial generation, 1 face detail
+            self.assertEqual(len(calls), 2)
+            metadata = job["result"]["metadata"]
+            self.assertIn("face_detail", metadata)
+            self.assertTrue(metadata["face_detail"]["applied"])
+            base_file = Path(service.OUTPUT_DIR) / f"qwen_{job_id}_base.png"
+            final_file = Path(service.OUTPUT_DIR) / f"qwen_{job_id}.png"
+            self.assertTrue(base_file.exists())
+            self.assertTrue(final_file.exists())
+            service.CANCEL_EVENTS.pop(job_id, None)
+
+    @patch.object(service.EXECUTOR, "submit")
+    @patch.object(service.identity_assist, "face_boxes")
+    @patch.object(service.identity_assist, "similarity", return_value={"status": "measured", "faces": [{"cosine_similarity": 0.85}]})
+    def test_face_detail_skips_when_face_is_large(self, similarity, face_boxes, submit):
+        calls = []
+        def mock_run(workflow, **kwargs):
+            p = Path(self.temp.name) / f"mock_{len(calls)}.png"
+            Image.new("RGB", (896, 672), (120, 140, 160)).save(p)
+            calls.append(workflow)
+            return p
+
+        with patch.object(service.CLIENT, "run", side_effect=mock_run):
+            # Face width/height >= 128
+            face_boxes.return_value = [{'box': (300, 100, 180, 220), 'width': 180, 'height': 220}]
+            response = self.client.post("/api/jobs", data={
+                "task": "generate", "prompt": "Portrait laughing", "identity_enabled": "true",
+                "identity_reviewed": "true", "identity_box": "[0.2, 0.1, 0.5, 0.5]",
+                "face_detail": "true", "mode": "fast", "lora_enabled": "false"
+            }, files={"identity_reference": ("identity.png", bitmap(), "image/png")})
+            self.assertEqual(response.status_code, 202)
+            job_id = response.json()["job_id"]
+            event = service.CANCEL_EVENTS[job_id]
+            service.process_job(job_id, event)
+
+            job = service.get_job(job_id)
+            self.assertEqual(job["status"], "succeeded")
+            # Should have called CLIENT.run only ONCE (skipped face detail)
+            self.assertEqual(len(calls), 1)
+            metadata = job["result"]["metadata"]
+            self.assertIn("face_detail", metadata)
+            self.assertFalse(metadata["face_detail"]["applied"])
+            service.CANCEL_EVENTS.pop(job_id, None)
+
+    @patch.object(service.EXECUTOR, "submit")
+    @patch.object(service.identity_assist, "face_boxes")
+    @patch.object(service.identity_assist, "similarity", return_value={"status": "measured", "faces": [{"cosine_similarity": 0.85}]})
+    def test_face_detail_error_does_not_fail_job(self, similarity, face_boxes, submit):
+        calls = []
+        def mock_run(workflow, **kwargs):
+            if len(calls) == 0:
+                p = Path(self.temp.name) / "mock_0.png"
+                Image.new("RGB", (896, 672), (120, 140, 160)).save(p)
+                calls.append(workflow)
+                return p
+            raise RuntimeError("Temporary CUDA failure during sharpening")
+
+        with patch.object(service.CLIENT, "run", side_effect=mock_run):
+            face_boxes.return_value = [{'box': (400, 60, 50, 60), 'width': 50, 'height': 60}]
+            response = self.client.post("/api/jobs", data={
+                "task": "generate", "prompt": "Riding", "identity_enabled": "true",
+                "identity_reviewed": "true", "identity_box": "[0.2, 0.1, 0.5, 0.5]",
+                "face_detail": "true", "mode": "fast", "lora_enabled": "false"
+            }, files={"identity_reference": ("identity.png", bitmap(), "image/png")})
+            job_id = response.json()["job_id"]
+            event = service.CANCEL_EVENTS[job_id]
+            service.process_job(job_id, event)
+
+            job = service.get_job(job_id)
+            # Job still succeeds with base output
+            self.assertEqual(job["status"], "succeeded")
+            metadata = job["result"]["metadata"]
+            self.assertFalse(metadata["face_detail"]["applied"])
+            self.assertTrue(any("Face detail enhancement" in w for w in metadata["warnings"]))
+            service.CANCEL_EVENTS.pop(job_id, None)
+
 
 if __name__ == "__main__":
     unittest.main()

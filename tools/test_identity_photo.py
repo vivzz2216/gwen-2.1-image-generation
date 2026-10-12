@@ -27,20 +27,29 @@ CASES = [
     ('sleeping', 'balanced', 'The person in the reference is sleeping on their side in a bed, eyes fully closed and face relaxed. The head rests on a pillow, one hand rests beside the cheek, the body lies horizontally under a blanket with shoulders visible in a plain sleep shirt. Preserve recognizable facial identity and hairstyle. One person. Show the head, pillow and reclining upper body.'),
     ('laughing', 'balanced', 'A head-and-shoulders photograph of the person in the reference laughing naturally: mouth open with teeth visible, cheeks lifted, eyes gently narrowed with joy. Preserve recognizable facial identity, hairstyle and source clothing. One person.'),
     ('surprised', 'balanced', 'A head-and-shoulders photograph of the person in the reference with a clearly surprised expression: eyebrows raised, eyes widened, lips slightly parted. Preserve recognizable facial identity, hairstyle and source clothing. One person.'),
+    ('running', 'balanced', 'A full-body photograph of the person in the reference jogging along a path, seen in profile. Both feet captured in mid-stride, arms bent naturally. Casual athletic wear. Preserve recognizable facial identity and hairstyle. One person.'),
+    ('skateboarding', 'balanced', 'The person in the reference is riding a skateboard on a street, balanced with knees slightly bent and arms out for balance. Full body view showing the skateboard and wheels. Casual streetwear. Preserve recognizable facial identity and hairstyle. One person.'),
+    ('yoga_tree', 'balanced', 'A full-body photograph of the person in the reference practicing yoga tree pose: standing balanced on one leg with the opposite foot placed against the inner thigh, hands together in prayer position at chest height. Plain athletic clothes. Preserve recognizable facial identity. One person.'),
+    ('cafe_reading', 'balanced', 'A medium shot of the person in the reference sitting at a wooden café table, reading a book. One hand holds the open book, relaxed posture, warm ambient café lighting. Preserve recognizable facial identity and hairstyle. One person.'),
+    ('crying', 'balanced', 'A head-and-shoulders photograph of the person in the reference with an emotional, tearful expression: eyes glistening with visible tears, eyebrows drawn together with sadness, gentle vulnerable expression. Preserve recognizable facial identity and hairstyle. One person.'),
+    ('winking', 'balanced', 'A head-and-shoulders photograph of the person in the reference giving a playful wink: one eye closed in a clear deliberate wink, the other eye open with a slight smile. Preserve recognizable facial identity, hairstyle and source clothing. One person.'),
+    ('angry', 'balanced', 'A head-and-shoulders photograph of the person in the reference with a stern, angry expression: furrowed brows, intense focused gaze, tightened lips. Preserve recognizable facial identity and hairstyle. One person.'),
 ]
 ACTION_CASES = {'cycling', 'motorcycle', 'sleeping', 'laughing', 'surprised'}
+POSES2_CASES = {'cycling', 'motorcycle', 'running', 'skateboarding', 'yoga_tree', 'cafe_reading', 'crying', 'winking', 'angry'}
 
 def gallery(dest, rows, source_name):
     body = ['<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Local identity photo tests</title>',
-        '<style>body{font:16px system-ui;margin:24px;background:#171717;color:#eee}a{color:#c1bcff}img{max-width:100%;max-height:520px;object-fit:contain}.pair{display:flex;gap:16px;flex-wrap:wrap}.pair a{max-width:46%}section{margin:32px 0}pre{white-space:pre-wrap}</style>',
+        '<style>body{font:16px system-ui;margin:24px;background:#171717;color:#eee}a{color:#c1bcff}img{max-width:100%;max-height:520px;object-fit:contain}.pair{display:flex;gap:16px;flex-wrap:wrap}.pair a{max-width:32%}section{margin:32px 0}pre{white-space:pre-wrap}</style>',
         '<h1>'+html.escape(source_name)+' — local Identity Assist tests</h1>',
         '<p>Original file unchanged. AVIF is decoded into a separate PNG for Studio. All generation is local Qwen 2.1/ComfyUI, no LoRA. Face similarity is advisory, not proof of identity or action correctness.</p>',
         '<p><a href="original.png">Normalized original</a> · <a href="head.png">Reviewed head crop</a> · <a href="context.json">Input provenance</a> · <a href="results.json">JSON results</a></p>']
     for row in rows:
         body.append('<section><h2>'+html.escape(row['case'])+'</h2><p>'+html.escape(row.get('visual_status','not_reviewed'))+'</p>')
         body.append('<div class="pair"><a href="original.png"><img src="original.png" alt="Normalized original reference"></a>')
+        if row.get('base_image'): body.append('<a href="'+row['base_image']+'"><img src="'+row['base_image']+'" alt="'+html.escape(row['case'])+' unsharpened base"></a>')
         if row.get('image'): body.append('<a href="'+row['image']+'"><img src="'+row['image']+'" alt="'+html.escape(row['case'])+' output"></a>')
-        body.append('</div><p>'+html.escape(row['prompt'])+'</p><pre>'+html.escape(json.dumps({k:row.get(k) for k in ['mode','elapsed_sec','sampled_peak_device_vram_mib','visual_notes','error']},indent=2))+'</pre></section>')
+        body.append('</div><p>'+html.escape(row['prompt'])+'</p><pre>'+html.escape(json.dumps({k:row.get(k) for k in ['mode','elapsed_sec','sampled_peak_device_vram_mib','visual_notes','error','face_detail']},indent=2))+'</pre></section>')
     body.append('</html>')
     (dest/'index.html').write_text('\n'.join(body),encoding='utf-8')
 
@@ -49,7 +58,9 @@ def main():
     parser.add_argument('--input',type=Path); parser.add_argument('--resume',type=Path)
     parser.add_argument('--prepare',action='store_true'); parser.add_argument('--approved-head',action='store_true')
     parser.add_argument('--case',choices=[row[0] for row in CASES]); parser.add_argument('--render-report',action='store_true')
-    parser.add_argument('--suite', choices=['actions'])
+    parser.add_argument('--suite', choices=['actions', 'poses2'])
+    parser.add_argument('--quiet', action='store_true')
+    parser.add_argument('--face-detail', action='store_true', default=True)
     args=parser.parse_args()
     if not args.resume and not args.input: parser.error('Provide an input photo or existing run to resume')
     dest=args.resume.resolve() if args.resume else ROOT/'outputs'/'identity_photo_tests'/datetime.now().strftime('%Y%m%d_%H%M%S_%f')
@@ -76,6 +87,7 @@ def main():
         for index,(name,mode,prompt) in enumerate(CASES):
             if args.case and args.case!=name: continue
             if args.suite == 'actions' and name not in ACTION_CASES: continue
+            if args.suite == 'poses2' and name not in POSES2_CASES: continue
             row=next((row for row in rows if row['case']==name),None)
             if row and (row.get('image') or row.get('error')): continue
             if not row:
@@ -83,7 +95,7 @@ def main():
                 if queue.get('queue_running') or queue.get('queue_pending'):
                     print('ComfyUI is busy; resume later without interrupting other jobs.',flush=True); break
                 row={'case':name,'mode':mode,'prompt':prompt,'seed':202610127+index,'lora_enabled':False,
-                     'aspect_ratio':'4:3' if name in {'cycling','motorcycle','sleeping'} else '3:4','visual_status':'not_reviewed'}; rows.append(row)
+                     'aspect_ratio':'4:3' if name in {'cycling','motorcycle','sleeping','running','skateboarding','cafe_reading'} else '3:4','visual_status':'not_reviewed'}; rows.append(row)
             samples=[]; stop=threading.Event()
             def monitor():
                 while not stop.is_set():
@@ -96,7 +108,8 @@ def main():
             try:
                 if not row.get('job_id'):
                     response=client.post('/api/jobs',data={'task':'generate','prompt':prompt,'mode':mode,'aspect_ratio':row.get('aspect_ratio','3:4'),
-                        'seed':str(row['seed']),'lora_enabled':'false','identity_enabled':'true','identity_reviewed':'true','identity_box':json.dumps(config['head_box'])},
+                        'seed':str(row['seed']),'lora_enabled':'false','identity_enabled':'true','identity_reviewed':'true',
+                        'identity_box':json.dumps(config['head_box']),'face_detail':'true' if args.face_detail else 'false'},
                         files={'identity_reference':('original.png',(dest/'original.png').read_bytes(),'image/png')})
                     response.raise_for_status(); row['job_id']=response.json()['job_id']; report.write_text(json.dumps(rows,indent=2),encoding='utf-8')
                     print('Started '+name+': '+row['job_id'],flush=True)
@@ -104,14 +117,29 @@ def main():
                 while time.monotonic()<deadline:
                     response=client.get('/api/jobs/'+row['job_id']); response.raise_for_status(); job=response.json()
                     if job['status'] in ['succeeded','failed','cancelled']: break
-                    if job.get('phase')!=previous: previous=job.get('phase'); print(name+': '+str(previous),flush=True)
+                    if not args.quiet:
+                        if job.get('phase')!=previous: previous=job.get('phase'); print(name+': '+str(previous),flush=True)
+                    else:
+                        if job.get('phase') in ['Sharpening face', 'Checking face likeness on CPU'] and job.get('phase') != previous:
+                            previous = job.get('phase'); print(name+': '+str(previous), flush=True)
                     time.sleep(2)
                 else: raise TimeoutError('Job is still active; resume to collect it, do not submit a duplicate')
                 if job['status']!='succeeded': raise RuntimeError(job.get('error') or job['status'])
                 row['metadata']=job.get('metadata',{}); row['elapsed_sec']=job.get('elapsed_sec')
+                fd = row['metadata'].get('face_detail', {})
+                row['face_detail'] = fd
+                if fd.get('base_image_url'):
+                    base_src = (ROOT / fd['base_image_url'].lstrip('/')).resolve()
+                    if base_src.is_file():
+                        shutil.copy2(base_src, dest / f"{name}_base.png")
+                        row['base_image'] = f"{name}_base.png"
                 output=(ROOT/job['image_url'].lstrip('/')).resolve()
                 if not output.is_relative_to((ROOT/'outputs').resolve()): raise ValueError('Unexpected result path')
                 shutil.copy2(output,dest/(name+'.png')); row['image']=name+'.png'
+                likeness = row['metadata'].get('identity_assist', {}).get('likeness', {})
+                sim = likeness.get('faces', [{}])[0].get('cosine_similarity', 'N/A') if likeness.get('status') == 'measured' else 'N/A'
+                fd_info = f"sharpened {fd.get('face_px')}" if fd.get('applied') else 'no sharpening needed'
+                print(f"Done {name} in {row['elapsed_sec']}s (Likeness: {sim}, {fd_info})", flush=True)
             except Exception as exc: row['error']=str(exc); print(str(exc),flush=True)
             finally:
                 stop.set(); thread.join(timeout=5); row['sampled_peak_device_vram_mib']=max(samples) if samples else None

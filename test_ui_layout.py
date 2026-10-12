@@ -61,6 +61,26 @@ class LayoutTests(unittest.TestCase):
         self.assertIn("setEnhancer(", js)
         self.assertIn("card-alt-enhance-btn", js)
 
+    def test_workflow_tabs_and_drop_isolation(self):
+        html = (ROOT / "web/index.html").read_text(encoding="utf-8")
+        for tab in ("createTab", "editTab", "restyleTab"):
+            with self.subTest(tab=tab):
+                self.assertIn(f'id="{tab}"', html)
+        task_tabs = re.findall(r'id="(?:createTab|editTab|restyleTab)"', html)
+        self.assertEqual(len(task_tabs), 3)
+
+        js = (ROOT / "web/studio.js").read_text(encoding="utf-8")
+        # Ensure per-box drop handler stops event propagation
+        self.assertIn('event.stopPropagation();', js)
+        # Ensure window drop handler handles restyle workflow by selecting identity without switching to edit
+        self.assertRegex(
+            js,
+            r'if\s*\(\s*state\.workflow\s*===\s*["\']restyle["\']\s*\)\s*void\s+selectIdentity\('
+        )
+        self.assertIn('id="faceDetailEnabled"', html)
+        self.assertIn('id="sharpenFaceBtn"', html)
+        self.assertIn('"face_detail"', js)
+
 
 if __name__ == "__main__":
     unittest.main()

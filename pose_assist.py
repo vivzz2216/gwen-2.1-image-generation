@@ -7,7 +7,7 @@ from PIL import Image
 import prompt_intent
 
 ROOT = Path(__file__).resolve().parent
-REPAIR_KINDS = {"none", "face", "hand", "leg", "contact"}
+REPAIR_KINDS = {"none", "face", "hand", "leg", "contact", "face_detail"}
 
 
 def interpretation(prompt):

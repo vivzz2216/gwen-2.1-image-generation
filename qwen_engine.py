@@ -113,7 +113,7 @@ def build_workflow(
     cache_device: str | None = None, cache_dtype: str | None = None,
     lora_name: str | None = None, lora_strength: float = 0.8,
     sampler_name: str | None = None, scheduler: str | None = None,
-    reference_only: bool = False,
+    reference_only: bool = False, denoise: float = 1.0,
 ) -> dict:
     """Build a core-node API workflow; SaveImage is always node 9.
 
@@ -129,6 +129,8 @@ def build_workflow(
     steps = profile.steps if steps is None else steps
     if not isinstance(steps, int) or isinstance(steps, bool) or not 1 <= steps <= 100:
         raise ValueError("Steps must be between 1 and 100")
+    if not isinstance(denoise, (int, float)) or isinstance(denoise, bool) or not 0.05 <= float(denoise) <= 1.0:
+        raise ValueError("Denoise must be between 0.05 and 1.0")
     if len(reference_names) > 2:
         raise ValueError("Use at most two additional references on this 6 GB configuration")
     if (mask_name or reference_names) and not source_name:
@@ -193,7 +195,7 @@ def build_workflow(
         latent_link = ["6", 0]
     workflow["7"] = _node("KSampler", model=["2", 0], positive=["5", 0], negative=["5", 1],
                           latent_image=latent_link, seed=seed, steps=steps, cfg=1.0,
-                          sampler_name=sampler_name or "euler", scheduler=scheduler or "simple", denoise=1.0)
+                          sampler_name=sampler_name or "euler", scheduler=scheduler or "simple", denoise=float(denoise))
     if profile.tiled_decode:
         workflow["8"] = _node("VAEDecodeTiled", samples=["7", 0], vae=["4", 0],
                               tile_size=512, overlap=64, temporal_size=64, temporal_overlap=8)

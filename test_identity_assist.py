@@ -121,4 +121,9 @@ class IdentityTests(unittest.TestCase):
         self.assertEqual(response.status_code, 422)
         self.assertIn('approved Identity Assist', response.text)
 
+    def test_face_boxes(self):
+        image = Image.new('RGB', (256, 256))
+        boxes = identity.face_boxes(image)
+        self.assertIsInstance(boxes, list)
+
 if __name__ == '__main__': unittest.main()

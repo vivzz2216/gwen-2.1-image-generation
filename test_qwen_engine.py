@@ -53,6 +53,19 @@ class WorkflowTests(unittest.TestCase):
         self.assertIn("images.image_2", workflow["5"]["inputs"])
         self.assertEqual(workflow["32"]["inputs"]["alpha"], ["22", 1])
 
+    def test_denoise_parameter_in_workflow(self):
+        wf_default = build_workflow("test scene")
+        self.assertEqual(wf_default["7"]["inputs"]["denoise"], 1.0)
+
+        wf_partial = build_workflow("test scene", denoise=0.55)
+        self.assertEqual(wf_partial["7"]["inputs"]["denoise"], 0.55)
+
+        with self.assertRaises(ValueError):
+            build_workflow("test scene", denoise=0.01)
+
+        with self.assertRaises(ValueError):
+            build_workflow("test scene", denoise=1.2)
+
     def test_isolated_input_subfolder_is_allowed_and_traversal_is_not(self):
         workflow = build_edit("Add sunglasses", "studio_uploads/source.png")
         self.assertEqual(workflow["10"]["inputs"]["image"], "studio_uploads/source.png")

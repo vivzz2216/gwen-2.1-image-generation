@@ -31,6 +31,7 @@ import prompt_intent
 import pose_prompting
 import pose_assist
 import identity_assist
+import face_detail
 
 PROJECT_DIR = Path(__file__).resolve().parent
 OUTPUT_DIR = str(PROJECT_DIR / "outputs")
@@ -588,7 +589,8 @@ async def prepare_request(task, prompt, mode, aspect_ratio, seed, num_steps, tra
                           lora_enabled: bool = True, lora_strength: float = 0.8,
                           pose_enabled=False, pose_reference=None, pose_reviewed=False, pose_order="same",
                           mask_reviewed=False, repair_kind="none", repair_parent_id="", lora_name="",
-                          identity_enabled=False, identity_reference=None, identity_reviewed=False, identity_box=""):
+                          identity_enabled=False, identity_reference=None, identity_reviewed=False, identity_box="",
+                          face_detail: bool = False):
     lora_name = resolve_lora(lora_name)
     settings = GenerateRequest(prompt=prompt, mode=mode, aspect_ratio=aspect_ratio, seed=seed,
                                num_steps=num_steps, is_transparent=transparent,
@@ -619,10 +621,11 @@ async def prepare_request(task, prompt, mode, aspect_ratio, seed, num_steps, tra
     if pose_enabled and mask is not None and not mask_reviewed:
         raise HTTPException(422, "Review the movement mask, including moved limbs and exposed background")
     if repair_kind != "none":
-        if repair_kind == "face" and not identity_enabled:
+        if repair_kind in {"face", "face_detail"} and not identity_enabled:
             raise HTTPException(422, "Face likeness repair requires an approved Identity Assist head crop")
-        if task != "edit" or not preserve or mask is None or not mask_reviewed or region != "manual":
-            raise HTTPException(422, "A repair requires Edit mode, protected pixels and an approved custom mask with joint/contact context")
+        if repair_kind != "face_detail":
+            if task != "edit" or not preserve or mask is None or not mask_reviewed or region != "manual":
+                raise HTTPException(422, "A repair requires Edit mode, protected pixels and an approved custom mask with joint/contact context")
         if not re.fullmatch(r"[0-9a-f]{32}", repair_parent_id):
             raise HTTPException(422, "Choose a completed Studio result to repair")
         parent = get_job(repair_parent_id)
@@ -720,7 +723,8 @@ async def prepare_request(task, prompt, mode, aspect_ratio, seed, num_steps, tra
             "identity_enabled": identity_enabled, "identity_reviewed": identity_reviewed,
             "identity_head_path": str(identity_head_path) if identity_head_path else None,
             "reference_only": task == "generate" and identity_enabled,
-            "repair_kind": repair_kind, "repair_parent_id": repair_parent_id}
+            "repair_kind": repair_kind, "repair_parent_id": repair_parent_id,
+            "face_detail": bool(face_detail or repair_kind == "face_detail")}
 
 
 @app.post("/api/jobs", status_code=202)
@@ -735,10 +739,11 @@ async def submit_job(
     lora_enabled: bool = Form(True), lora_strength: float = Form(0.8), lora_name: str = Form("", max_length=200),
     pose_enabled: bool = Form(False), pose_reference: Optional[UploadFile] = File(None),
     pose_reviewed: bool = Form(False), pose_order: Literal["same", "swap"] = Form("same"),
-    mask_reviewed: bool = Form(False), repair_kind: Literal["none", "face", "hand", "leg", "contact"] = Form("none"),
+    mask_reviewed: bool = Form(False), repair_kind: Literal["none", "face", "hand", "leg", "contact", "face_detail"] = Form("none"),
     repair_parent_id: str = Form("", max_length=32),
     identity_enabled: bool = Form(False), identity_reference: Optional[UploadFile] = File(None),
     identity_reviewed: bool = Form(False), identity_box: str = Form("", max_length=200),
+    face_detail: bool = Form(False),
 ):
     try:
         request = await prepare_request(task, prompt, mode, aspect_ratio, seed, num_steps,
@@ -747,7 +752,8 @@ async def submit_job(
             pose_enabled=pose_enabled, pose_reference=pose_reference, pose_reviewed=pose_reviewed,
             pose_order=pose_order, mask_reviewed=mask_reviewed, repair_kind=repair_kind, repair_parent_id=repair_parent_id,
             identity_enabled=identity_enabled, identity_reference=identity_reference,
-            identity_reviewed=identity_reviewed, identity_box=identity_box)
+            identity_reviewed=identity_reviewed, identity_box=identity_box,
+            face_detail=face_detail)
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
     job_id = uuid.uuid4().hex
@@ -787,10 +793,11 @@ async def submit_batch(
     lora_name: str = Form("", max_length=200),
     pose_enabled: bool = Form(False), pose_reference: Optional[UploadFile] = File(None),
     pose_reviewed: bool = Form(False), pose_order: Literal["same", "swap"] = Form("same"),
-    mask_reviewed: bool = Form(False), repair_kind: Literal["none", "face", "hand", "leg", "contact"] = Form("none"),
+    mask_reviewed: bool = Form(False), repair_kind: Literal["none", "face", "hand", "leg", "contact", "face_detail"] = Form("none"),
     repair_parent_id: str = Form("", max_length=32),
     identity_enabled: bool = Form(False), identity_reference: Optional[UploadFile] = File(None),
     identity_reviewed: bool = Form(False), identity_box: str = Form("", max_length=200),
+    face_detail: bool = Form(False),
 ):
     try:
         raw_prompts = json.loads(prompts) if prompts.strip().startswith("[") else [p.strip() for p in prompts.split("\n")]
@@ -818,7 +825,8 @@ async def submit_batch(
             pose_enabled=pose_enabled, pose_reference=pose_reference, pose_reviewed=pose_reviewed,
             pose_order=pose_order, mask_reviewed=mask_reviewed,
             identity_enabled=identity_enabled, identity_reference=identity_reference,
-            identity_reviewed=identity_reviewed, identity_box=identity_box
+            identity_reviewed=identity_reviewed, identity_box=identity_box,
+            face_detail=face_detail
         )
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
@@ -1112,6 +1120,91 @@ def process_job(job_id, cancel):
             metadata["pose_assist"] = {"enabled": req.get("pose_enabled", False), "route": "native_reference" if req.get("pose_enabled") else "none",
                 "reviewed": req.get("pose_reviewed", False), "anatomy_verified": False}
             metadata["repair"] = {"kind": req.get("repair_kind", "none"), "parent_id": req.get("repair_parent_id", ""), "automatic": False}
+
+            if req.get("face_detail") and req.get("identity_enabled") and req.get("identity_head_path"):
+                try:
+                    detected_boxes = identity_assist.face_boxes(generated)
+                    detail_plan = face_detail.plan(generated.size, detected_boxes)
+                    if detail_plan:
+                        base_filename = f"qwen_{job_id}_base.png"
+                        clean_base = generated.copy()
+                        clean_base.info.clear()
+                        clean_base.save(Path(OUTPUT_DIR) / base_filename, format="PNG")
+
+                        update_job(job_id, phase="Sharpening face")
+                        crop_img = generated.crop(detail_plan["crop_box"])
+                        crop_work = crop_img.resize(detail_plan["work_size"], Image.Resampling.LANCZOS)
+                        crop_dest = COMFY_INPUT_DIR / f"{job_id}_crop.png"
+                        crop_work.save(crop_dest)
+                        uploaded.append(crop_dest)
+                        crop_name = f"studio_uploads/{crop_dest.name}"
+
+                        mask_dest = COMFY_INPUT_DIR / f"{job_id}_crop_mask.png"
+                        detail_plan["mask"].save(mask_dest)
+                        uploaded.append(mask_dest)
+                        crop_mask_name = f"studio_uploads/{mask_dest.name}"
+
+                        with Image.open(req["identity_head_path"]) as head_im:
+                            head_dest = COMFY_INPUT_DIR / f"{job_id}_crop_head.png"
+                            head_im.save(head_dest)
+                            uploaded.append(head_dest)
+                            head_name = f"studio_uploads/{head_dest.name}"
+
+                        detail_instruction = face_detail.prompt(prompt_text)
+                        compiled_detail = identity_assist.compile_identity(detail_instruction, task="edit")
+
+                        crop_workflow = engine.build_workflow(
+                            compiled_detail,
+                            mode=req["mode"],
+                            seed=req["seed"] + 99,
+                            steps=20,
+                            source_name=crop_name,
+                            source_size=detail_plan["work_size"],
+                            reference_names=(head_name,),
+                            mask_name=crop_mask_name,
+                            denoise=0.55,
+                        )
+
+                        crop_output = CLIENT.run(
+                            crop_workflow,
+                            cancel_event=cancel,
+                            on_submitted=lambda pid: update_job(job_id, prompt_id=pid),
+                        )
+                        if cancel.is_set():
+                            update_job(job_id, status="cancelled", phase="Cancelled", finished_at=time.time())
+                            return
+                        try:
+                            with Image.open(crop_output) as im:
+                                refined_crop = im.copy()
+                        finally:
+                            try:
+                                crop_output.unlink(missing_ok=True)
+                            except Exception:
+                                pass
+                            CLIENT.wipe_history()
+
+                        generated = face_detail.composite(generated, refined_crop, detail_plan)
+                        metadata["face_detail"] = {
+                            "applied": True,
+                            "face_px": detail_plan["face_px"],
+                            "crop_box": detail_plan["crop_box"],
+                            "denoise": 0.55,
+                            "base_image_url": f"/outputs/{base_filename}",
+                        }
+                    else:
+                        metadata["face_detail"] = {
+                            "applied": False,
+                            "reason": "No small face requiring detail enhancement detected.",
+                        }
+                except Exception as detail_err:
+                    metadata["face_detail"] = {
+                        "applied": False,
+                        "reason": f"Face detail enhancement error: {detail_err}",
+                    }
+                    metadata["warnings"].append(
+                        "Face detail enhancement could not complete; original generation preserved."
+                    )
+
             if req.get("identity_enabled"):
                 update_job(job_id, phase="Checking face likeness on CPU")
                 try:
