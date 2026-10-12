@@ -23,6 +23,7 @@ CASES = [
     ('raised_arm', 'fast', 'A full-body photograph of the person in the identity references raising the right arm above the head, with both feet on the ground. Keep the recognizable facial identity, hairstyle and source clothing. One person. No added text.'),
     ('bench_red_swimsuit_juice', 'balanced', 'The person in the identity references is sitting on a bench, wearing a red swimsuit and drinking juice. Preserve the recognizable facial identity and hairstyle. Show a seated pose supported by the bench and the actual drinking moment, with the juice vessel at the lips rather than merely held. The outfit must be a red swimsuit, replacing the original outfit. One person.'),
     ('cycling', 'balanced', 'The person in the reference is riding a pedal bicycle along a path, seen from a front three-quarter view. Seated on the saddle, both hands gripping their own handlebar grips, each foot on its corresponding pedal, knees bent naturally in a pedaling position. Show the complete person and bicycle, including both wheels. Wearing a casual shirt and trousers. Preserve recognizable facial identity and hairstyle. One rider, one bicycle.'),
+    ('skydiving', 'balanced', 'A full-body photograph of the person in the reference skydiving during freefall high above the earth with clouds and landscape visible below. The person is in a stable belly-to-earth arched freefall position with arms and legs spread. Wearing a colorful modern skydiving jumpsuit and harness. Clear skydiving goggles with the face, eyes and expression clearly visible, hair blowing back. Preserve recognizable facial identity. One person.'),
     ('motorcycle', 'balanced', 'The person in the reference is riding a motorcycle, viewed from a front three-quarter angle. Seated astride the seat, both hands on the handlebar grips, feet on the foot pegs, looking ahead. Wearing a jacket, trousers and an open-face helmet with the face visible. Show the complete rider and motorcycle. Preserve recognizable facial identity. One person, one motorcycle.'),
     ('sleeping', 'balanced', 'The person in the reference is sleeping on their side in a bed, eyes fully closed and face relaxed. The head rests on a pillow, one hand rests beside the cheek, the body lies horizontally under a blanket with shoulders visible in a plain sleep shirt. Preserve recognizable facial identity and hairstyle. One person. Show the head, pillow and reclining upper body.'),
     ('laughing', 'balanced', 'A head-and-shoulders photograph of the person in the reference laughing naturally: mouth open with teeth visible, cheeks lifted, eyes gently narrowed with joy. Preserve recognizable facial identity, hairstyle and source clothing. One person.'),
@@ -34,9 +35,11 @@ CASES = [
     ('crying', 'balanced', 'A head-and-shoulders photograph of the person in the reference with an emotional, tearful expression: eyes glistening with visible tears, eyebrows drawn together with sadness, gentle vulnerable expression. Preserve recognizable facial identity and hairstyle. One person.'),
     ('winking', 'balanced', 'A head-and-shoulders photograph of the person in the reference giving a playful wink: one eye closed in a clear deliberate wink, the other eye open with a slight smile. Preserve recognizable facial identity, hairstyle and source clothing. One person.'),
     ('angry', 'balanced', 'A head-and-shoulders photograph of the person in the reference with a stern, angry expression: furrowed brows, intense focused gaze, tightened lips. Preserve recognizable facial identity and hairstyle. One person.'),
+    ('surfing', 'balanced', 'A full-body photograph of the person in the reference riding a surfboard on an ocean wave, balanced in an athletic crouch with knees bent and arms outstretched for balance. Surfing on the wave face with ocean spray. Wearing a casual wetsuit. Head up, looking forward, face clearly visible. Preserve recognizable facial identity. One surfer, one surfboard.'),
+    ('rock_climbing', 'balanced', 'A full-body photograph of the person in the reference rock climbing on a steep outdoor cliff face. Both hands gripping chalked rock holds, one foot on a small foothold, climbing harness on. Looking upward toward the next hold, face clearly visible. Athletic climbing clothes. Preserve recognizable facial identity. One climber.'),
 ]
 ACTION_CASES = {'cycling', 'motorcycle', 'sleeping', 'laughing', 'surprised'}
-POSES2_CASES = {'cycling', 'motorcycle', 'running', 'skateboarding', 'yoga_tree', 'cafe_reading', 'crying', 'winking', 'angry'}
+POSES2_CASES = {'cycling', 'skydiving', 'motorcycle', 'sleeping', 'running', 'skateboarding', 'yoga_tree', 'cafe_reading', 'crying', 'winking', 'angry', 'surfing', 'rock_climbing'}
 
 def gallery(dest, rows, source_name):
     body = ['<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Local identity photo tests</title>',
@@ -95,7 +98,7 @@ def main():
                 if queue.get('queue_running') or queue.get('queue_pending'):
                     print('ComfyUI is busy; resume later without interrupting other jobs.',flush=True); break
                 row={'case':name,'mode':mode,'prompt':prompt,'seed':202610127+index,'lora_enabled':False,
-                     'aspect_ratio':'4:3' if name in {'cycling','motorcycle','sleeping','running','skateboarding','cafe_reading'} else '3:4','visual_status':'not_reviewed'}; rows.append(row)
+                     'aspect_ratio':'4:3' if name in {'cycling','motorcycle','sleeping','running','skateboarding','cafe_reading','skydiving','surfing'} else '3:4','visual_status':'not_reviewed'}; rows.append(row)
             samples=[]; stop=threading.Event()
             def monitor():
                 while not stop.is_set():
