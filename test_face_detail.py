@@ -50,6 +50,23 @@ class FaceDetailTests(unittest.TestCase):
         self.assertEqual(mask.getpixel((0, 0)), 0)
         self.assertEqual(mask.getpixel((767, 767)), 0)
 
+    def test_plan_creates_landmark_contour_mask_for_tilted_face(self):
+        # Face with roll tilt and 5 landmarks: [r_eye, l_eye, nose, r_mouth, l_mouth]
+        faces = [{
+            'box': (400.0, 100.0, 80.0, 100.0),
+            'width': 80,
+            'height': 100,
+            'landmarks': [420.0, 130.0, 460.0, 140.0, 440.0, 155.0, 425.0, 175.0, 455.0, 180.0]
+        }]
+        plan = face_detail.plan((896, 672), faces)
+        self.assertIsNotNone(plan)
+        mask = plan['mask']
+        self.assertEqual(mask.size, (768, 768))
+        self.assertTrue(plan.get('landmark_aligned', False))
+        # Mask around face center should be high confidence
+        cx, cy = int(plan['work_face_center'][0]), int(plan['work_face_center'][1])
+        self.assertGreater(mask.getpixel((cx, cy)), 200)
+
     def test_prompt_includes_expected_references(self):
         text = face_detail.prompt("Riding a bicycle")
         self.assertIn("<image1>", text)

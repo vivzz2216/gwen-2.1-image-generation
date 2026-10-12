@@ -241,8 +241,8 @@ class JobTests(unittest.TestCase):
             return p
 
         with patch.object(service.CLIENT, "run", side_effect=mock_run):
-            # Face width/height >= 128
-            face_boxes.return_value = [{'box': (300, 100, 180, 220), 'width': 180, 'height': 220}]
+            # Face width/height >= 256 (SMALL_FACE_PX)
+            face_boxes.return_value = [{'box': (300, 100, 280, 320), 'width': 280, 'height': 320}]
             response = self.client.post("/api/jobs", data={
                 "task": "generate", "prompt": "Portrait laughing", "identity_enabled": "true",
                 "identity_reviewed": "true", "identity_box": "[0.2, 0.1, 0.5, 0.5]",

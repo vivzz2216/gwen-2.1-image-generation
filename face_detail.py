@@ -52,18 +52,77 @@ def plan(image_size: tuple[int, int], faces: list[dict]) -> dict | None:
     rx_work = (w_box / 2.0) * scale * 1.3
     ry_work = (h_box / 2.0) * scale * 1.4
 
-    # Create elliptical mask with soft feathering
     mask = Image.new("L", (WORK_SIZE, WORK_SIZE), 0)
     draw = ImageDraw.Draw(mask)
-    draw.ellipse(
-        [
-            fcx_work - rx_work,
-            fcy_work - ry_work,
-            fcx_work + rx_work,
-            fcy_work + ry_work,
-        ],
-        fill=255,
-    )
+
+    landmarks = face.get("landmarks")
+    landmark_aligned = False
+    if landmarks and len(landmarks) == 10:
+        try:
+            # 5 landmarks: right_eye, left_eye, nose, right_mouth, left_mouth
+            r_eye = ((landmarks[0] - left) * scale, (landmarks[1] - top) * scale)
+            l_eye = ((landmarks[2] - left) * scale, (landmarks[3] - top) * scale)
+            nose = ((landmarks[4] - left) * scale, (landmarks[5] - top) * scale)
+            r_mouth = ((landmarks[6] - left) * scale, (landmarks[7] - top) * scale)
+            l_mouth = ((landmarks[8] - left) * scale, (landmarks[9] - top) * scale)
+
+            eye_mid = ((r_eye[0] + l_eye[0]) / 2.0, (r_eye[1] + l_eye[1]) / 2.0)
+            mouth_mid = ((r_mouth[0] + l_mouth[0]) / 2.0, (r_mouth[1] + l_mouth[1]) / 2.0)
+
+            dx_side = l_eye[0] - r_eye[0]
+            dy_side = l_eye[1] - r_eye[1]
+            roll_angle = math.degrees(math.atan2(dy_side, dx_side))
+
+            # Build anatomical facial hull points
+            dx_down = mouth_mid[0] - eye_mid[0]
+            dy_down = mouth_mid[1] - eye_mid[1]
+
+            chin = (mouth_mid[0] + 0.65 * dx_down, mouth_mid[1] + 0.65 * dy_down)
+            forehead_mid = (eye_mid[0] - 0.75 * dx_down, eye_mid[1] - 0.75 * dy_down)
+            l_forehead = (forehead_mid[0] + 0.45 * dx_side, forehead_mid[1] + 0.45 * dy_side)
+            r_forehead = (forehead_mid[0] - 0.45 * dx_side, forehead_mid[1] - 0.45 * dy_side)
+            l_temple = (l_eye[0] + 0.4 * dx_side, l_eye[1] + 0.4 * dy_side)
+            r_temple = (r_eye[0] - 0.4 * dx_side, r_eye[1] - 0.4 * dy_side)
+            l_jaw = (l_mouth[0] + 0.35 * dx_side + 0.25 * dx_down, l_mouth[1] + 0.35 * dy_side + 0.25 * dy_down)
+            r_jaw = (r_mouth[0] - 0.35 * dx_side + 0.25 * dx_down, r_mouth[1] - 0.35 * dy_side + 0.25 * dy_down)
+
+            polygon_pts = [r_forehead, forehead_mid, l_forehead, l_temple, l_jaw, chin, r_jaw, r_temple]
+            draw.polygon(polygon_pts, fill=255)
+
+            # Also draw roll-aligned ellipse to ensure smooth oval coverage
+            ellipse_layer = Image.new("L", (WORK_SIZE, WORK_SIZE), 0)
+            e_draw = ImageDraw.Draw(ellipse_layer)
+            e_draw.ellipse(
+                [
+                    fcx_work - rx_work * 0.9,
+                    fcy_work - ry_work * 0.95,
+                    fcx_work + rx_work * 0.9,
+                    fcy_work + ry_work * 0.95,
+                ],
+                fill=255,
+            )
+            ellipse_rotated = ellipse_layer.rotate(-roll_angle, resample=Image.Resampling.BILINEAR, center=(fcx_work, fcy_work))
+            mask = Image.new("L", (WORK_SIZE, WORK_SIZE), 0)
+            from PIL import ImageChops
+            draw_poly_layer = Image.new("L", (WORK_SIZE, WORK_SIZE), 0)
+            ImageDraw.Draw(draw_poly_layer).polygon(polygon_pts, fill=255)
+            mask = ImageChops.lighter(draw_poly_layer, ellipse_rotated)
+            landmark_aligned = True
+        except Exception:
+            landmark_aligned = False
+
+    if not landmark_aligned:
+        draw = ImageDraw.Draw(mask)
+        draw.ellipse(
+            [
+                fcx_work - rx_work,
+                fcy_work - ry_work,
+                fcx_work + rx_work,
+                fcy_work + ry_work,
+            ],
+            fill=255,
+        )
+
     # Apply blur for seamless edge blending
     mask = mask.filter(ImageFilter.GaussianBlur(radius=20))
 
@@ -74,6 +133,8 @@ def plan(image_size: tuple[int, int], faces: list[dict]) -> dict | None:
         "face_px": [int(round(w_box)), int(round(h_box))],
         "scale": scale,
         "mask": mask,
+        "landmark_aligned": landmark_aligned,
+        "work_face_center": (fcx_work, fcy_work),
     }
 
 

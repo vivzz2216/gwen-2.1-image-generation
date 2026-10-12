@@ -99,11 +99,13 @@ def face_boxes(image):
     boxes = []
     for face in faces:
         x, y, width, height = map(float, face[:4])
+        landmarks = [round(float(v), 2) for v in face[4:14]] if len(face) >= 14 else None
         boxes.append({
             'box': (x, y, width, height),
             'confidence': round(float(face[-1]), 3),
             'width': round(width),
             'height': round(height),
+            'landmarks': landmarks,
         })
     return boxes
 
