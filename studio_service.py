@@ -473,9 +473,11 @@ def capabilities():
         "candidate": "TheseAlpacas V2",
         "available": available_loras(),
     }
+    id_caps = dict(identity_assist.capabilities())
+    id_caps["bfs_head_adapter"] = (LORA_DIR / BFS_HEAD_LORA).is_file()
     return {"modes": engine.mode_info(), "backend": backend, "enhancer": enhancer, "segmentation": regions.segmenter_status(),
             "pose_assist": pose_assist.capabilities(),
-            "identity_assist": identity_assist.capabilities(),
+            "identity_assist": id_caps,
             "max_reference_images": 3, "max_upload_mb": 25, "lora": lora_status,
             "pose_guidance": {"enabled": pose_prompting.enabled(), "scope": "soft human-pose prompting; rendered anatomy is not verified"}}
 
@@ -538,6 +540,7 @@ def _run_comfy_workflow(nodes):
 
 
 LORA_DIR = Path("ComfyUI_windows_portable/ComfyUI/models/loras")
+BFS_HEAD_LORA = "bfs_head_v1.1_qwen_2.1.safetensors"
 
 
 def available_loras() -> list[str]:
@@ -1150,8 +1153,18 @@ def process_job(job_id, cancel):
                             uploaded.append(head_dest)
                             head_name = f"studio_uploads/{head_dest.name}"
 
-                        detail_instruction = face_detail.prompt(prompt_text)
-                        compiled_detail = identity_assist.compile_identity(detail_instruction, task="edit")
+                        use_bfs = (LORA_DIR / BFS_HEAD_LORA).is_file()
+                        if use_bfs:
+                            compiled_detail = face_detail.prompt(prompt_text, use_bfs_head=True)
+                            lora_crop = BFS_HEAD_LORA
+                            lora_strength_crop = 1.0
+                            crop_denoise = 0.65
+                        else:
+                            detail_instruction = face_detail.prompt(prompt_text, use_bfs_head=False)
+                            compiled_detail = identity_assist.compile_identity(detail_instruction, task="edit")
+                            lora_crop = None
+                            lora_strength_crop = 0.0
+                            crop_denoise = 0.55
 
                         crop_workflow = engine.build_workflow(
                             compiled_detail,
@@ -1162,7 +1175,9 @@ def process_job(job_id, cancel):
                             source_size=detail_plan["work_size"],
                             reference_names=(head_name,),
                             mask_name=crop_mask_name,
-                            denoise=0.55,
+                            lora_name=lora_crop,
+                            lora_strength=lora_strength_crop,
+                            denoise=crop_denoise,
                         )
 
                         crop_output = CLIENT.run(
@@ -1186,9 +1201,10 @@ def process_job(job_id, cancel):
                         generated = face_detail.composite(generated, refined_crop, detail_plan)
                         metadata["face_detail"] = {
                             "applied": True,
+                            "adapter": BFS_HEAD_LORA if use_bfs else "none",
                             "face_px": detail_plan["face_px"],
                             "crop_box": detail_plan["crop_box"],
-                            "denoise": 0.55,
+                            "denoise": crop_denoise,
                             "base_image_url": f"/outputs/{base_filename}",
                         }
                     else:

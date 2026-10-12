@@ -77,8 +77,15 @@ def plan(image_size: tuple[int, int], faces: list[dict]) -> dict | None:
     }
 
 
-def prompt(user_prompt: str) -> str:
+def prompt(user_prompt: str, use_bfs_head: bool = False) -> str:
     """Compose the refinement instruction for the face detail inpainting pass."""
+    if use_bfs_head:
+        return (
+            "head_swap: start with <image1> as the base image, keeping its lighting, environment, and background. "
+            "remove the head from <image1> completely and replace it with the head from <image2>, strictly preserving "
+            "the hair, eye color, nose structure from <image2>. copy the direction of the eye, head rotation, "
+            "micro expressions from <image1>, high quality, sharp details, 4k"
+        )
     return (
         "Refine the face in <image1> using the identity references in <image2>. "
         "Keep the exact head pose, facial expression, eye gaze, lighting and hairstyle unchanged. "

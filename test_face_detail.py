@@ -56,6 +56,12 @@ class FaceDetailTests(unittest.TestCase):
         self.assertIn("<image2>", text)
         self.assertIn("expression", text.lower())
 
+        bfs_text = face_detail.prompt("Riding a bicycle", use_bfs_head=True)
+        self.assertIn("head_swap:", bfs_text)
+        self.assertIn("<image1>", bfs_text)
+        self.assertIn("<image2>", bfs_text)
+        self.assertIn("strictly preserving", bfs_text)
+
     def test_composite_preserves_unmasked_pixels(self):
         original = Image.new('RGB', (896, 672), (100, 150, 200))
         faces = [{'box': (425.0, 61.0, 57.0, 72.0), 'width': 57, 'height': 72}]
@@ -72,6 +78,31 @@ class FaceDetailTests(unittest.TestCase):
         if x0 > 10:
             self.assertEqual(result.getpixel((5, 5)), original.getpixel((5, 5)))
         self.assertEqual(result.getpixel((10, 600)), original.getpixel((10, 600)))
+
+
+    def test_bfs_head_workflow_structure(self):
+        import qwen_engine as engine
+        bfs_prompt = face_detail.prompt("Riding a bicycle", use_bfs_head=True)
+        wf = engine.build_workflow(
+            bfs_prompt,
+            mode="balanced",
+            steps=20,
+            source_name="crop.png",
+            source_size=(768, 768),
+            reference_names=("head.png",),
+            mask_name="mask.png",
+            lora_name="bfs_head_v1.1_qwen_2.1.safetensors",
+            lora_strength=1.0,
+            denoise=0.65,
+        )
+        self.assertIn("1b", wf)
+        self.assertEqual(wf["1b"]["class_type"], "LoraLoaderModelOnly")
+        self.assertEqual(wf["1b"]["inputs"]["lora_name"], "bfs_head_v1.1_qwen_2.1.safetensors")
+        self.assertEqual(wf["1b"]["inputs"]["strength_model"], 1.0)
+        self.assertEqual(wf["7"]["inputs"]["denoise"], 0.65)
+        self.assertIn("images.image_1", wf["5"]["inputs"])
+        self.assertIn("images.image_2", wf["5"]["inputs"])
+        self.assertIn("head_swap:", wf["5"]["inputs"]["prompt"])
 
 
 if __name__ == '__main__':
