@@ -17,6 +17,7 @@ from PIL import Image, ImageOps
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 import face_detail
+import face_restore
 import identity_assist
 import qwen_engine as engine
 
@@ -63,23 +64,25 @@ def render_gallery(dest: Path, results: list[dict]):
         ".badge-base{background:#30363d;color:#8b949e;}",
         ".badge-normal{background:#1f6feb22;color:#58a6ff;border:1px solid #1f6feb;}",
         ".badge-bfs{background:#23863622;color:#3fb950;border:1px solid #238636;}",
+        ".badge-enhanced{background:#a371f722;color:#d2a8ff;border:1px solid #a371f7;}",
         "</style></head><body>",
-        "<h1>Qwen 2.1 Restyle: Normal vs BFS Head v1.1 Comparison</h1>",
+        "<h1>Qwen 2.1 Restyle: Normal vs BFS Head v1.1 vs Enhanced (CodeFormer)</h1>",
         "<p>Comprehensive A/B benchmark across 10 distinct poses, angles, and actions using Jenna Ortega test reference. Evaluated with OpenCV SFace cosine similarity on identical base generations.</p>",
     ]
 
     # Summary table
     html_lines.append("<table class='metric-table'><thead><tr>")
-    html_lines.append("<th>#</th><th>Case / Pose</th><th>Face Px</th><th>Base Likeness</th><th>Normal Likeness</th><th>BFS Head Likeness</th><th>Improvement (&Delta;)</th>")
+    html_lines.append("<th>#</th><th>Case / Pose</th><th>Face Px</th><th>Base Likeness</th><th>Normal Likeness</th><th>BFS Head Likeness</th><th>Enhanced Likeness (CodeFormer)</th><th>Total Gain (&Delta;)</th>")
     html_lines.append("</tr></thead><tbody>")
     for i, r in enumerate(results, 1):
         b = f"{r.get('base_sim', 0):.4f}" if r.get('base_sim') is not None else "N/A"
         n = f"{r.get('normal_sim', 0):.4f}" if r.get('normal_sim') is not None else "N/A"
         bfs = f"{r.get('bfs_sim', 0):.4f}" if r.get('bfs_sim') is not None else "N/A"
-        delta = r.get("delta")
-        d_str = f"+{delta:.4f}" if delta is not None and delta > 0 else (f"{delta:.4f}" if delta is not None else "N/A")
-        gain_cls = " class='gain'" if delta and delta > 0 else ""
-        html_lines.append(f"<tr><td>{i}</td><td><b>{html.escape(r['case'])}</b></td><td>{r.get('face_px', 'N/A')}</td><td>{b}</td><td>{n}</td><td><b>{bfs}</b></td><td{gain_cls}><b>{d_str}</b></td></tr>")
+        enh = f"{r.get('enhanced_sim', 0):.4f}" if r.get('enhanced_sim') is not None else "N/A"
+        delta_enh = r.get("delta_enhanced", r.get("delta"))
+        d_str = f"+{delta_enh:.4f}" if delta_enh is not None and delta_enh > 0 else (f"{delta_enh:.4f}" if delta_enh is not None else "N/A")
+        gain_cls = " class='gain'" if delta_enh and delta_enh > 0 else ""
+        html_lines.append(f"<tr><td>{i}</td><td><b>{html.escape(r['case'])}</b></td><td>{r.get('face_px', 'N/A')}</td><td>{b}</td><td>{n}</td><td>{bfs}</td><td><b>{enh}</b></td><td{gain_cls}><b>{d_str}</b></td></tr>")
     html_lines.append("</tbody></table>")
 
     # Detailed cards
@@ -92,14 +95,23 @@ def render_gallery(dest: Path, results: list[dict]):
         if r.get("normal_img"):
             html_lines.append(f"<div class='col'><h4>Normal Face Detail (Standard)</h4><img src='{r['normal_img']}'><div class='badge badge-normal'>Likeness: {r.get('normal_sim', 'N/A')}</div></div>")
         if r.get("bfs_img"):
-            html_lines.append(f"<div class='col'><h4>BFS Head v1.1 (Upgraded)</h4><img src='{r['bfs_img']}'><div class='badge badge-bfs'>Likeness: {r.get('bfs_sim', 'N/A')} (&Delta; {r.get('delta', 0):+.4f})</div></div>")
+            html_lines.append(f"<div class='col'><h4>BFS Head v1.1 (Standard Swap)</h4><img src='{r['bfs_img']}'><div class='badge badge-bfs'>Likeness: {r.get('bfs_sim', 'N/A')}</div></div>")
+        if r.get("enhanced_img"):
+            html_lines.append(f"<div class='col'><h4>Enhanced (BFS + Landmark + CodeFormer)</h4><img src='{r['enhanced_img']}'><div class='badge badge-enhanced'>Likeness: {r.get('enhanced_sim', 'N/A')} (&Delta; {r.get('delta_enhanced', 0):+.4f})</div></div>")
         html_lines.append("</div></div>")
 
     html_lines.append("</body></html>")
     (dest / "index.html").write_text("\n".join(html_lines), encoding="utf-8")
 
 
-def run_face_refinement(base_img_path: Path, head_crop_path: Path, prompt_text: str, use_bfs: bool, out_path: Path) -> float | None:
+def run_face_refinement(
+    base_img_path: Path,
+    head_crop_path: Path,
+    prompt_text: str,
+    use_bfs: bool,
+    use_restore: bool,
+    out_path: Path,
+) -> float | None:
     """Run isolated face detail pass on an existing base image."""
     base = Image.open(base_img_path).convert("RGB")
     head = Image.open(head_crop_path).convert("RGB")
@@ -128,13 +140,13 @@ def run_face_refinement(base_img_path: Path, head_crop_path: Path, prompt_text: 
         compiled_detail = face_detail.prompt(prompt_text, use_bfs_head=True)
         lora_name = BFS_LORA
         lora_strength = 1.0
-        denoise = 0.65
+        denoise = face_detail.adaptive_denoise(plan["face_px"])
     else:
         detail_instruction = face_detail.prompt(prompt_text, use_bfs_head=False)
         compiled_detail = identity_assist.compile_identity(detail_instruction, task="edit")
         lora_name = None
         lora_strength = 0.0
-        denoise = 0.55
+        denoise = max(0.40, face_detail.adaptive_denoise(plan["face_px"]) - 0.08)
 
     wf = engine.build_workflow(
         compiled_detail,
@@ -164,12 +176,15 @@ def run_face_refinement(base_img_path: Path, head_crop_path: Path, prompt_text: 
         head_dest.unlink(missing_ok=True)
         CLIENT.wipe_history()
 
+    if use_restore and face_restore.is_available():
+        refined_crop = face_restore.restore_face(refined_crop, fidelity=0.8)
+
     composited = face_detail.composite(base, refined_crop, plan)
     composited.save(out_path)
 
     likeness = identity_assist.similarity(head, composited)
     score = likeness.get("faces", [{}])[0].get("cosine_similarity") if likeness.get("status") == "measured" else None
-    mode_name = "BFS Head" if use_bfs else "Normal"
+    mode_name = "Enhanced (BFS+CodeFormer)" if (use_bfs and use_restore) else ("BFS Head" if use_bfs else "Normal")
     print(f"  [{mode_name}] Refined in {elapsed}s -> Likeness: {score}", flush=True)
     return score
 
@@ -272,7 +287,7 @@ def main():
                     rec["normal_img"] = normal_img_path.name
                     print(f"  [Normal] Reused prior output -> Likeness: {rec['normal_sim']}")
                 else:
-                    rec["normal_sim"] = run_face_refinement(base_img_path, OUT_DIR / "head.png", prompt, use_bfs=False, out_path=normal_img_path)
+                    rec["normal_sim"] = run_face_refinement(base_img_path, OUT_DIR / "head.png", prompt, use_bfs=False, use_restore=False, out_path=normal_img_path)
                     rec["normal_img"] = normal_img_path.name
             else:
                 if rec.get("normal_sim") is None:
@@ -291,7 +306,7 @@ def main():
                     rec["bfs_img"] = bfs_img_path.name
                     print(f"  [BFS Head] Reused verified surfing run -> Likeness: {rec['bfs_sim']}")
                 else:
-                    rec["bfs_sim"] = run_face_refinement(base_img_path, OUT_DIR / "head.png", prompt, use_bfs=True, out_path=bfs_img_path)
+                    rec["bfs_sim"] = run_face_refinement(base_img_path, OUT_DIR / "head.png", prompt, use_bfs=True, use_restore=False, out_path=bfs_img_path)
                     rec["bfs_img"] = bfs_img_path.name
             else:
                 if rec.get("bfs_sim") is None:
@@ -304,9 +319,33 @@ def main():
             elif rec.get("bfs_sim") is not None and rec.get("base_sim") is not None:
                 rec["delta"] = round(rec["bfs_sim"] - rec["base_sim"], 4)
 
+            # Step 4: Enhanced Pipeline (BFS Head + Landmark Contour Mask + Adaptive Denoise + CodeFormer)
+            enhanced_img_path = OUT_DIR / f"{name}_enhanced.png"
+            if not enhanced_img_path.is_file():
+                rec["enhanced_sim"] = run_face_refinement(
+                    base_img_path,
+                    OUT_DIR / "head.png",
+                    prompt,
+                    use_bfs=True,
+                    use_restore=True,
+                    out_path=enhanced_img_path,
+                )
+                rec["enhanced_img"] = enhanced_img_path.name
+            else:
+                if rec.get("enhanced_sim") is None:
+                    enh_im = Image.open(enhanced_img_path)
+                    enh_likeness = identity_assist.similarity(head, enh_im)
+                    rec["enhanced_sim"] = enh_likeness.get("faces", [{}])[0].get("cosine_similarity") if enh_likeness.get("status") == "measured" else None
+                    rec["enhanced_img"] = enhanced_img_path.name
+
+            if rec.get("enhanced_sim") is not None and rec.get("normal_sim") is not None:
+                rec["delta_enhanced"] = round(rec["enhanced_sim"] - rec["normal_sim"], 4)
+            elif rec.get("enhanced_sim") is not None and rec.get("base_sim") is not None:
+                rec["delta_enhanced"] = round(rec["enhanced_sim"] - rec["base_sim"], 4)
+
             results_path.write_text(json.dumps(results, indent=2), encoding="utf-8")
             render_gallery(OUT_DIR, results)
-            print(f"  Delta: {rec.get('delta')}")
+            print(f"  Delta (BFS): {rec.get('delta')} | Delta (Enhanced): {rec.get('delta_enhanced')}")
 
     print("\nBenchmark complete! Gallery saved to:", OUT_DIR / "index.html")
 
