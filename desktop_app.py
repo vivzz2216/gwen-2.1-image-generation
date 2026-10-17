@@ -10,6 +10,7 @@ import json
 import logging
 import os
 import shutil
+import socket
 import subprocess
 import sys
 import threading
@@ -17,6 +18,7 @@ import time
 import urllib.request
 from pathlib import Path
 from dolphin_prompting import PROFILE_VERSION
+import network_info
 
 ROOT = Path(__file__).resolve().parent
 PORTABLE = ROOT / "ComfyUI_windows_portable"
@@ -55,10 +57,20 @@ def reachable(url: str, timeout: float = 2.0) -> bool:
         return False
 
 
+def port_listening(host: str, port: int) -> bool:
+    """An HTTP timeout during GPU work must not start a duplicate backend."""
+    try:
+        with socket.create_connection((host,port),timeout=2):
+            return True
+    except OSError:
+        return False
+
+
 class DesktopAppManager:
-    def __init__(self, port: int = 7860, host: str = "127.0.0.1", force_edge: bool = False):
+    def __init__(self, port: int = 7860, host: str = "127.0.0.1", force_edge: bool = False, listen_host: str = None):
         self.port = port
         self.host = host
+        self.listen_host = listen_host if listen_host is not None else os.getenv("STUDIO_HOST", "0.0.0.0")
         self.force_edge = force_edge
         self.studio_proc = None
         self.comfy_proc = None
@@ -136,6 +148,9 @@ class DesktopAppManager:
             logger.info("Studio backend is already up.")
             return
 
+        if port_listening(self.host,self.port):
+            raise RuntimeError('Studio is already listening but its HTTP response is delayed. No second server was started. Wait for the current image job, then reopen the app.')
+
         logger.info(f"Starting Studio backend on {self.base_url}...")
         venv_py = ROOT / ".venv" / "Scripts" / "python.exe"
         py_exe = str(venv_py) if venv_py.exists() else sys.executable
@@ -144,7 +159,7 @@ class DesktopAppManager:
         stdout_log = (STATE_DIR / "studio_backend.stdout.log").open("a", encoding="utf-8")
         stderr_log = (STATE_DIR / "studio_backend.stderr.log").open("a", encoding="utf-8")
         self.studio_proc = subprocess.Popen(
-            [py_exe, "-m", "uvicorn", "studio_app:app", "--host", self.host, "--port", str(self.port)],
+            [py_exe, "-m", "uvicorn", "studio_app:app", "--host", self.listen_host, "--port", str(self.port)],
             cwd=ROOT,
             stdout=stdout_log,
             stderr=stderr_log,
@@ -155,6 +170,9 @@ class DesktopAppManager:
         while time.monotonic() < deadline:
             if reachable(f"{self.base_url}/api/session/status", timeout=1.5) or reachable(f"{self.base_url}/api/capabilities", timeout=1.5):
                 logger.info("Studio backend is ready.")
+                banner = network_info.format_connection_banner(self.port)
+                logger.info("\n" + banner)
+                print("\n" + banner, flush=True)
                 return
             if self.studio_proc.poll() is not None:
                 raise RuntimeError("Studio backend exited unexpectedly during startup. Check outputs/.studio/studio_backend.stderr.log.")
@@ -181,6 +199,7 @@ class DesktopAppManager:
             edge_path,
             f"--app={self.base_url}",
             f"--user-data-dir={user_data}",
+            "--inprivate",
             "--window-size=1440,900",
             "--window-position=80,60",
             "--app-id=QwenImageStudio",
@@ -222,7 +241,7 @@ class DesktopAppManager:
                 gui="edgechromium",
                 icon=icon_arg,
                 storage_path=storage_path,
-                private_mode=False
+                private_mode=True
             )
             return True
         except Exception as exc:
@@ -233,6 +252,11 @@ class DesktopAppManager:
         """Start all services and open the native Windows desktop app window."""
         logger.info("Starting Qwen Image Studio Desktop Application...")
         
+        # Ensure fresh, private session on launch by cleaning any stale cache directories
+        for stale in [STATE_DIR / "webview_cache", STATE_DIR / "edge_desktop_profile"]:
+            if stale.exists():
+                shutil.rmtree(stale, ignore_errors=True)
+
         # 1. Start background services
         threading.Thread(target=self.ensure_ollama, daemon=True).start()
         threading.Thread(target=self.ensure_comfyui, daemon=True).start()
@@ -261,7 +285,7 @@ class DesktopAppManager:
         self.shutdown()
 
     def shutdown(self):
-        """Cleanly terminate backend subprocesses."""
+        """Cleanly terminate backend subprocesses and remove temporary session profiles."""
         logger.info("Shutting down Desktop Application...")
         if self.studio_proc and self.studio_proc.poll() is None:
             logger.info("Terminating Studio backend process...")
@@ -275,14 +299,37 @@ class DesktopAppManager:
                     pass
             self.studio_proc = None
 
+        if self.comfy_proc and self.comfy_proc.poll() is None:
+            try:
+                self.comfy_proc.terminate()
+            except Exception:
+                pass
+            self.comfy_proc = None
+
+        if self.ollama_proc and self.ollama_proc.poll() is None:
+            try:
+                self.ollama_proc.terminate()
+            except Exception:
+                pass
+            self.ollama_proc = None
+
+        # Zero-trace privacy: Wipe cached browser profiles and webview storage when closed
+        webview_cache = STATE_DIR / "webview_cache"
+        if webview_cache.exists():
+            shutil.rmtree(webview_cache, ignore_errors=True)
+        edge_profile = STATE_DIR / "edge_desktop_profile"
+        if edge_profile.exists():
+            shutil.rmtree(edge_profile, ignore_errors=True)
+
 
 def main():
     parser = argparse.ArgumentParser(description="Qwen Image 2.1 Studio Windows Desktop App")
     parser.add_argument("--port", type=int, default=7860, help="Studio web port (default: 7860)")
+    parser.add_argument("--listen-host", "--host", dest="listen_host", type=str, default=os.getenv("STUDIO_HOST", "0.0.0.0"), help="Network interface to bind (default: 0.0.0.0 for iPhone/remote access)")
     parser.add_argument("--edge", action="store_true", help="Force Microsoft Edge Standalone App mode")
     args = parser.parse_args()
 
-    app = DesktopAppManager(port=args.port, force_edge=args.edge)
+    app = DesktopAppManager(port=args.port, force_edge=args.edge, listen_host=args.listen_host)
     try:
         app.launch()
     except Exception as exc:

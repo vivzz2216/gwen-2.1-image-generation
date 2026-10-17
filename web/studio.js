@@ -58,11 +58,28 @@
     return typeof detail === "string" ? detail : detail ? JSON.stringify(detail) : "The request could not be completed.";
   }
 
-  async function api(url, options) {
-    const response = await fetch(url, options);
-    const data = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(errorText(data));
-    return data;
+  async function api(url, options = {}) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 25000);
+    try {
+      const response = await fetch(url, { ...options, signal: options.signal || controller.signal });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        const msg = errorText(data);
+        if (msg === "The request could not be completed." && response.status >= 500) {
+          throw new Error(`Server error (${response.status}). Please check laptop console.`);
+        }
+        throw new Error(msg);
+      }
+      return data;
+    } catch (err) {
+      if (err.name === "AbortError") {
+        throw new Error("Connection to laptop server timed out. Check if your Wi-Fi or Tailscale VPN is connected.");
+      }
+      throw err;
+    } finally {
+      clearTimeout(timeout);
+    }
   }
 
   function localImageUrl(value) {
@@ -892,17 +909,22 @@
   /* --- Batch Progress & Gallery UI --- */
   function setStoredJob(id) {
     try {
-      if (id) localStorage.setItem("qwen-studio-job", id);
-      else localStorage.removeItem("qwen-studio-job");
+      if (id) sessionStorage.setItem("qwen-studio-job", id);
+      else sessionStorage.removeItem("qwen-studio-job");
+      localStorage.removeItem("qwen-studio-job");
     } catch { /* Storage is optional. */ }
   }
 
   function setStoredBatch(id) {
     try {
-      if (id) localStorage.setItem("qwen-studio-batch", id);
-      else localStorage.removeItem("qwen-studio-batch");
+      if (id) sessionStorage.setItem("qwen-studio-batch", id);
+      else sessionStorage.removeItem("qwen-studio-batch");
+      localStorage.removeItem("qwen-studio-batch");
     } catch { /* Storage is optional. */ }
   }
+
+  let loadingTimerInterval = null;
+  let loadingStartTimestamp = 0;
 
   function startLoadingState(title = "Generating your image…", detail = "Queued for local GPU…") {
     // 1. Immediately remove previously generated image
@@ -920,6 +942,15 @@
     $("loadingTimer").textContent = "0s";
     $("loadingProgressBar").style.width = "5%";
     $("loadingProgressBar").classList.add("indeterminate");
+
+    if (loadingTimerInterval) clearInterval(loadingTimerInterval);
+    loadingStartTimestamp = Date.now();
+    loadingTimerInterval = setInterval(() => {
+      const elapsed = Math.floor((Date.now() - loadingStartTimestamp) / 1000);
+      const mins = Math.floor(elapsed / 60);
+      const secs = Math.floor(elapsed % 60);
+      $("loadingTimer").textContent = mins > 0 ? `${mins}m ${secs}s` : `${secs}s`;
+    }, 1000);
   }
 
   function updateLoadingProgress(phase, progress, elapsed) {
@@ -932,14 +963,13 @@
       $("loadingProgressBar").classList.remove("indeterminate");
       $("loadingProgressBar").style.width = `${Math.min(100, Math.max(2, Math.round(progress * 100)))}%`;
     }
-    if (Number.isFinite(elapsed)) {
-      const mins = Math.floor(elapsed / 60);
-      const secs = Math.floor(elapsed % 60);
-      $("loadingTimer").textContent = mins > 0 ? `${mins}m ${secs}s` : `${secs}s`;
-    }
   }
 
   function finishLoadingState(success = true) {
+    if (loadingTimerInterval) {
+      clearInterval(loadingTimerInterval);
+      loadingTimerInterval = null;
+    }
     $("previewLoading").hidden = true;
     if (!success && !state.result?.image_url) {
       $("emptyState").hidden = false;
@@ -1091,7 +1121,8 @@
             break;
           }
           if (job.status === "failed") {
-            showError(errorText(job), true);
+            const err = job.error || errorText(job);
+            showError(err && err !== "The request could not be completed." ? err : "Image generation failed on the laptop. Please try again.", true);
             finishJob();
             break;
           }
@@ -1103,8 +1134,8 @@
           }
         } catch (error) {
           failures += 1;
-          if (failures >= 5) {
-            showError(`Connection lost: ${error.message} Refresh this page to reconnect to the saved job.`, true);
+          if (failures >= 60) {
+            showError(`Connection lost: ${error.message}. Refresh this page to reconnect to the saved job.`, true);
             $("jobPhase").textContent = "Connection interrupted";
             break;
           }
@@ -1159,8 +1190,8 @@
           }
         } catch (error) {
           failures += 1;
-          if (failures >= 5) {
-            showError(`Connection lost: ${error.message} Refresh this page to reconnect to the batch.`, true);
+          if (failures >= 60) {
+            showError(`Connection lost: ${error.message}. Refresh this page to reconnect to the batch.`, true);
             $("jobPhase").textContent = "Connection interrupted";
             break;
           }
@@ -1249,6 +1280,12 @@
       form.append("identity_reference", state.identity);
       form.append("identity_reviewed", String($("identityReviewed").checked));
       form.append("identity_box", JSON.stringify(state.identityBox));
+      if (state.identityThreeQuarter) {
+        form.append("identity_reference_three_quarter", state.identityThreeQuarter);
+      }
+      if (state.identityProfile) {
+        form.append("identity_reference_profile", state.identityProfile);
+      }
     }
     form.append("mask_reviewed", String(state.maskReady));
     if (usePose) form.append("pose_reference", state.pose);
@@ -1433,7 +1470,12 @@
     if (state.identityHeadUrl) URL.revokeObjectURL(state.identityHeadUrl);
     state.identity = state.identityUrl = state.identityImage = state.identityBox = state.identityHeadUrl = null;
     state.identityFaces = []; state.identityBusy = false;
+    state.identityThreeQuarter = null; state.identityProfile = null;
     $("identityInput").value = "";
+    if ($("identityThreeQuarterInput")) $("identityThreeQuarterInput").value = "";
+    if ($("identityProfileInput")) $("identityProfileInput").value = "";
+    if ($("identityThreeQuarterLabel")) $("identityThreeQuarterLabel").textContent = "Choose 3/4 photo";
+    if ($("identityProfileLabel")) $("identityProfileLabel").textContent = "Choose profile photo";
     ["identityX", "identityY", "identityW", "identityH"].forEach((id, index) => { $(id).value = index < 2 ? "0" : "100"; });
     $("identityFileLabel").textContent = "Choose identity photograph";
     $("identityFace").replaceChildren(new Option("Upload a photograph first", ""));
@@ -1555,6 +1597,20 @@
   });
   bindUpload("identityInput", "identityDrop", selectIdentity);
   $("identityRemove").addEventListener("click", clearIdentity);
+  if ($("identityThreeQuarterInput")) {
+    bindUpload("identityThreeQuarterInput", "identityThreeQuarterDrop", async file => {
+      validateFile(file);
+      state.identityThreeQuarter = file;
+      $("identityThreeQuarterLabel").textContent = file.name;
+    });
+  }
+  if ($("identityProfileInput")) {
+    bindUpload("identityProfileInput", "identityProfileDrop", async file => {
+      validateFile(file);
+      state.identityProfile = file;
+      $("identityProfileLabel").textContent = file.name;
+    });
+  }
   $("identityReviewed").addEventListener("change", updateRun);
   $("identityContinue").addEventListener("click", () => {
     if (!state.identityBox || !$("identityReviewed").checked || $("identityContinue").disabled) return;
@@ -1728,7 +1784,10 @@
     savePreference();
   });
 
-  $("refreshBackend").addEventListener("click", () => void fetchCapabilities());
+  $("refreshBackend").addEventListener("click", () => {
+    cleanSessionState();
+    window.location.reload();
+  });
   $("findMask").addEventListener("click", () => void findMask());
   $("removeSource").addEventListener("click", clearSource);
 
@@ -2011,24 +2070,74 @@
   if ($("enhancerDolphinBtn")) $("enhancerDolphinBtn").addEventListener("click", () => setEnhancer("dolphin"));
   if ($("enhancerQwenBtn")) $("enhancerQwenBtn").addEventListener("click", () => setEnhancer("qwen"));
 
+  // Zero-trace privacy: Never restore old jobs, batches, prompts or generated images from a previous session
   try {
-    const storedBatch = localStorage.getItem("qwen-studio-batch");
-    if (storedBatch) {
-      state.batchId = storedBatch;
-      state.jobId = storedBatch;
-      showBatchJob({total: 1, completed: 0, active_index: 0, overall_status: "running"});
-      updateRun();
-      void pollBatch(storedBatch);
-    } else {
-      const storedJob = localStorage.getItem("qwen-studio-job");
-      if (storedJob) {
-        state.jobId = storedJob;
-        showJob({status: "running", phase: "Reconnecting"});
-        updateRun();
-        void pollJob(storedJob);
-      }
-    }
+    localStorage.removeItem("qwen-studio-batch");
+    localStorage.removeItem("qwen-studio-job");
+    sessionStorage.removeItem("qwen-studio-batch");
+    sessionStorage.removeItem("qwen-studio-job");
   } catch { /* Stored job handling */ }
+
+  function cleanSessionState() {
+    try {
+      localStorage.removeItem("qwen-studio-job");
+      localStorage.removeItem("qwen-studio-batch");
+      sessionStorage.clear();
+    } catch { /* Storage is optional */ }
+
+    // 1. Remove all existing prompts
+    const textareas = document.querySelectorAll(".prompt-textarea");
+    textareas.forEach(t => { t.value = ""; });
+    state.prompts = [""];
+    state.promptUndos = [null];
+    state.promptChecks = [];
+    state.activePromptIndex = 0;
+    try { renderPromptCards(); } catch {}
+
+    // 2. Remove all existing generated images and galleries
+    state.result = null;
+    state.batchData = null;
+    state.batchId = null;
+    state.jobId = null;
+    if ($("resultImage")) {
+      $("resultImage").src = "";
+      $("resultImage").removeAttribute("src");
+    }
+    if ($("beforeImage")) {
+      $("beforeImage").src = "";
+      $("beforeImage").removeAttribute("src");
+    }
+    if ($("comparison")) $("comparison").hidden = true;
+    if ($("resultTools")) $("resultTools").hidden = true;
+    if ($("batchGallerySection")) $("batchGallerySection").hidden = true;
+    if ($("batchGallery")) $("batchGallery").replaceChildren();
+    if ($("previewLoading")) $("previewLoading").hidden = true;
+    if ($("emptyState")) $("emptyState").hidden = false;
+    if ($("preview")) $("preview").classList.remove("has-image");
+    if ($("workspaceTitle")) $("workspaceTitle").textContent = "Your image starts here.";
+    if ($("resultSize")) $("resultSize").textContent = "";
+    if ($("resultSummary")) $("resultSummary").textContent = "";
+    if ($("resultMetadata")) $("resultMetadata").textContent = "";
+
+    // 3. Remove existing source / edit / reference images
+    try { clearSource(); } catch {}
+    try { clearIdentity(); } catch {}
+    try { if ($("removeReference")) $("removeReference").click(); } catch {}
+    try { if ($("removePose")) $("removePose").click(); } catch {}
+  }
+
+  window.addEventListener("pagehide", (event) => {
+    if (!event.persisted && !state.jobId && !state.batchId) cleanSessionState();
+  });
+  window.addEventListener("beforeunload", () => {
+    if (!state.jobId && !state.batchId) cleanSessionState();
+  });
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") {
+      if (state.jobId && !state.polling) void pollJob(state.jobId);
+      if (state.batchId && !state.polling) void pollBatch(state.batchId);
+    }
+  });
 
   refreshMaskTools();
   void fetchCapabilities();

@@ -1,0 +1,9 @@
+{
+  "storage_directory": "stories",
+  "default_mode": "balanced",
+  "default_aspect_ratio": "4:3",
+  "max_reference_images": 3,
+  "evaluate_identity": true,
+  "model_names": {},
+  "notes": "Uses the existing ComfyUI installation and its model folders. Optional model_names keys: unet, clip, vae; values must be installed ComfyUI filenames. COMFYUI_URL configures the backend URL. QWEN_STORY_DIR overrides persistent story storage. No downloads are performed."
+}

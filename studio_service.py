@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Literal, Optional
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from PIL import Image, ImageOps, PngImagePlugin
@@ -60,6 +61,7 @@ MODEL_REAPER_THREAD = None
 
 @contextmanager
 def connection():
+    Path(DB_PATH).parent.mkdir(parents=True, exist_ok=True)
     db = sqlite3.connect(DB_PATH, timeout=30)
     db.execute("CREATE TABLE IF NOT EXISTS jobs (id TEXT PRIMARY KEY, data TEXT NOT NULL, created REAL NOT NULL)")
     db.execute("CREATE TABLE IF NOT EXISTS batches (id TEXT PRIMARY KEY, data TEXT NOT NULL, created REAL NOT NULL)")
@@ -144,6 +146,7 @@ def update_batch(batch_id, **changes):
 
 @asynccontextmanager
 async def lifespan(app):
+    STORY_ADAPTER.memory.recover()
     # Proactively wipe any residual prompt files and ComfyUI queue history on startup
     try:
         CLIENT.wipe_history()
@@ -179,6 +182,13 @@ async def lifespan(app):
 
 
 app = FastAPI(title="Qwen Image 2.1 Studio", version="3.0.0", lifespan=lifespan)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 class GenerateRequest(BaseModel):
@@ -243,7 +253,9 @@ def open_image(data):
 
 def save_image(image, label):
     filename = f"{label}_{uuid.uuid4().hex}.png"
-    path = Path(OUTPUT_DIR) / filename
+    out_dir = Path(OUTPUT_DIR)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    path = out_dir / filename
     clean = image.copy()
     clean.info.clear()
     clean.save(path, format="PNG")
@@ -386,7 +398,12 @@ def enhance_for_studio(prompt, **settings):
         testing_override = selected != dolphin.MODEL
         if testing_override:
             dolphin.unload()  # Release only the Studio-owned default enhancer.
-        return dolphin.enhance(prompt, keep_alive=0 if testing_override else (-1 if MODEL_SESSIONS.has_tabs() else 0), model=selected, **settings)
+        keep_alive=0 if testing_override else (-1 if MODEL_SESSIONS.has_tabs() else 0)
+        story_scenes=settings.pop('story_scenes',None)
+        if story_scenes is not None:
+            import story_prompting
+            return story_prompting.enhance(story_scenes,settings.pop('story_context'),keep_alive=keep_alive,model=selected)
+        return dolphin.enhance(prompt, keep_alive=keep_alive, model=selected, **settings)
     except dolphin.EnhancementError as exc:
         raise HTTPException(exc.status, str(exc)) from exc
     except ImageGenerationError as exc:
@@ -594,6 +611,7 @@ async def prepare_request(task, prompt, mode, aspect_ratio, seed, num_steps, tra
                           pose_enabled=False, pose_reference=None, pose_reviewed=False, pose_order="same",
                           mask_reviewed=False, repair_kind="none", repair_parent_id="", lora_name="",
                           identity_enabled=False, identity_reference=None, identity_reviewed=False, identity_box="",
+                          identity_reference_three_quarter=None, identity_reference_profile=None,
                           face_detail: bool = False,
                           face_detail_adapter: Literal["auto", "bfs_head", "none"] = "auto"):
     lora_name = resolve_lora(lora_name)
@@ -706,9 +724,51 @@ async def prepare_request(task, prompt, mode, aspect_ratio, seed, num_steps, tra
         raise HTTPException(422, "Additional references are available in Edit mode")
     reference_paths = []
     identity_head_path = None
+    identity_head_three_quarter_path = None
+    identity_head_profile_path = None
     if identity_enabled:
         identity_head_path, _ = save_image(identity_head, "identity_head")
         reference_paths.append(str(identity_head_path))
+        if identity_reference_three_quarter:
+            try:
+                tq_img = open_image(await identity_reference_three_quarter.read(25 * 1024 * 1024 + 1))
+                tq_crop = tq_img
+                try:
+                    tq_boxes = identity_assist.face_boxes(tq_img)
+                    if tq_boxes:
+                        bx, by, bw, bh = tq_boxes[0]["box"][:4]
+                        if 0 <= bx and 0 <= by and bx + bw <= tq_img.width and by + bh <= tq_img.height and bw >= 64 and bh >= 64:
+                            tq_crop = identity_assist.crop_head(tq_img, [
+                                bx / tq_img.width,
+                                by / tq_img.height,
+                                bw / tq_img.width,
+                                bh / tq_img.height,
+                            ])
+                except Exception:
+                    tq_crop = tq_img
+                identity_head_three_quarter_path, _ = save_image(tq_crop, "identity_head_tq")
+            except Exception:
+                pass
+        if identity_reference_profile:
+            try:
+                prof_img = open_image(await identity_reference_profile.read(25 * 1024 * 1024 + 1))
+                prof_crop = prof_img
+                try:
+                    prof_boxes = identity_assist.face_boxes(prof_img)
+                    if prof_boxes:
+                        bx, by, bw, bh = prof_boxes[0]["box"][:4]
+                        if 0 <= bx and 0 <= by and bx + bw <= prof_img.width and by + bh <= prof_img.height and bw >= 64 and bh >= 64:
+                            prof_crop = identity_assist.crop_head(prof_img, [
+                                bx / prof_img.width,
+                                by / prof_img.height,
+                                bw / prof_img.width,
+                                bh / prof_img.height,
+                            ])
+                except Exception:
+                    prof_crop = prof_img
+                identity_head_profile_path, _ = save_image(prof_crop, "identity_head_profile")
+            except Exception:
+                pass
     if pose_enabled:
         pose_image = open_image(await pose_reference.read(25 * 1024 * 1024 + 1))
         pose_path, _ = save_image(pose_image, "pose_reference")
@@ -727,6 +787,8 @@ async def prepare_request(task, prompt, mode, aspect_ratio, seed, num_steps, tra
             "pose_enabled": pose_enabled, "pose_reviewed": pose_reviewed, "pose_order": pose_order,
             "identity_enabled": identity_enabled, "identity_reviewed": identity_reviewed,
             "identity_head_path": str(identity_head_path) if identity_head_path else None,
+            "identity_head_three_quarter_path": str(identity_head_three_quarter_path) if identity_head_three_quarter_path else None,
+            "identity_head_profile_path": str(identity_head_profile_path) if identity_head_profile_path else None,
             "reference_only": task == "generate" and identity_enabled,
             "repair_kind": repair_kind, "repair_parent_id": repair_parent_id,
             "face_detail": bool(face_detail or repair_kind == "face_detail"),
@@ -748,6 +810,8 @@ async def submit_job(
     mask_reviewed: bool = Form(False), repair_kind: Literal["none", "face", "hand", "leg", "contact", "face_detail"] = Form("none"),
     repair_parent_id: str = Form("", max_length=32),
     identity_enabled: bool = Form(False), identity_reference: Optional[UploadFile] = File(None),
+    identity_reference_three_quarter: Optional[UploadFile] = File(None),
+    identity_reference_profile: Optional[UploadFile] = File(None),
     identity_reviewed: bool = Form(False), identity_box: str = Form("", max_length=200),
     face_detail: bool = Form(False),
     face_detail_adapter: Literal["auto", "bfs_head", "none"] = Form("auto"),
@@ -759,6 +823,8 @@ async def submit_job(
             pose_enabled=pose_enabled, pose_reference=pose_reference, pose_reviewed=pose_reviewed,
             pose_order=pose_order, mask_reviewed=mask_reviewed, repair_kind=repair_kind, repair_parent_id=repair_parent_id,
             identity_enabled=identity_enabled, identity_reference=identity_reference,
+            identity_reference_three_quarter=identity_reference_three_quarter,
+            identity_reference_profile=identity_reference_profile,
             identity_reviewed=identity_reviewed, identity_box=identity_box,
             face_detail=face_detail,
             face_detail_adapter=face_detail_adapter)
@@ -804,6 +870,8 @@ async def submit_batch(
     mask_reviewed: bool = Form(False), repair_kind: Literal["none", "face", "hand", "leg", "contact", "face_detail"] = Form("none"),
     repair_parent_id: str = Form("", max_length=32),
     identity_enabled: bool = Form(False), identity_reference: Optional[UploadFile] = File(None),
+    identity_reference_three_quarter: Optional[UploadFile] = File(None),
+    identity_reference_profile: Optional[UploadFile] = File(None),
     identity_reviewed: bool = Form(False), identity_box: str = Form("", max_length=200),
     face_detail: bool = Form(False),
     face_detail_adapter: Literal["auto", "bfs_head", "none"] = Form("auto"),
@@ -834,6 +902,8 @@ async def submit_batch(
             pose_enabled=pose_enabled, pose_reference=pose_reference, pose_reviewed=pose_reviewed,
             pose_order=pose_order, mask_reviewed=mask_reviewed,
             identity_enabled=identity_enabled, identity_reference=identity_reference,
+            identity_reference_three_quarter=identity_reference_three_quarter,
+            identity_reference_profile=identity_reference_profile,
             identity_reviewed=identity_reviewed, identity_box=identity_box,
             face_detail=face_detail,
             face_detail_adapter=face_detail_adapter,
@@ -952,7 +1022,8 @@ def cancel_batch(batch_id: str):
 def public_job(job):
     job = dict(job)
     req = dict(job.get("request", {}))
-    for key in ("source_path", "mask_path", "reference_paths", "identity_head_path"):
+    for key in ("source_path", "mask_path", "reference_paths", "identity_head_path",
+                "identity_head_three_quarter_path", "identity_head_profile_path"):
         req.pop(key, None)
     # SECURITY: Never return the user's prompt via GET or public endpoints
     req["prompt"] = "[Protected]"
@@ -1050,6 +1121,8 @@ def process_job(job_id, cancel):
                                       transparent=req["transparent"], reference=max(0, len(names)-1),
                                       clean_prompt=clean, pose_enabled=req.get("pose_enabled", False),
                                       pose_order=req.get("pose_order", "same"), task=req["task"], repair_kind=req.get("repair_kind", "none"), identity_enabled=req.get("identity_enabled", False))
+            if req.get("story_scene_id"):
+                compiled = STORY_ADAPTER.compiled(req)
             mask_name = None
             if mask:
                 sampling_mask = mask.crop(crop) if crop else mask
@@ -1141,7 +1214,7 @@ def process_job(job_id, cancel):
                         clean_base.info.clear()
                         clean_base.save(Path(OUTPUT_DIR) / base_filename, format="PNG")
 
-                        update_job(job_id, phase="Sharpening face")
+                        # Prepare shared assets for face detail passes
                         crop_img = generated.crop(detail_plan["crop_box"])
                         crop_work = crop_img.resize(detail_plan["work_size"], Image.Resampling.LANCZOS)
                         crop_dest = COMFY_INPUT_DIR / f"{job_id}_crop.png"
@@ -1154,7 +1227,21 @@ def process_job(job_id, cancel):
                         uploaded.append(mask_dest)
                         crop_mask_name = f"studio_uploads/{mask_dest.name}"
 
-                        with Image.open(req["identity_head_path"]) as head_im:
+                        # --- Pillar 3: Multi-Angle Reference Selection ---
+                        detected_yaw = "front"
+                        if detected_boxes:
+                            detected_yaw = identity_assist.estimate_head_yaw(detected_boxes[0])
+
+                        head_path_to_use = req["identity_head_path"]
+                        ref_angle_used = "front"
+                        if detected_yaw == "three_quarter" and req.get("identity_head_three_quarter_path"):
+                            head_path_to_use = req["identity_head_three_quarter_path"]
+                            ref_angle_used = "three_quarter"
+                        elif detected_yaw == "profile" and req.get("identity_head_profile_path"):
+                            head_path_to_use = req["identity_head_profile_path"]
+                            ref_angle_used = "profile"
+
+                        with Image.open(head_path_to_use) as head_im:
                             head_dest = COMFY_INPUT_DIR / f"{job_id}_crop_head.png"
                             head_im.save(head_dest)
                             uploaded.append(head_dest)
@@ -1166,69 +1253,184 @@ def process_job(job_id, cancel):
                         if adapter_choice == "none":
                             use_bfs = False
 
-                        if use_bfs:
-                            compiled_detail = face_detail.prompt(prompt_text, use_bfs_head=True)
-                            lora_crop = BFS_HEAD_LORA
-                            lora_strength_crop = 1.0
-                            crop_denoise = face_detail.adaptive_denoise(detail_plan["face_px"])
-                        else:
-                            detail_instruction = face_detail.prompt(prompt_text, use_bfs_head=False)
-                            compiled_detail = identity_assist.compile_identity(detail_instruction, task="edit")
-                            lora_crop = None
-                            lora_strength_crop = 0.0
-                            crop_denoise = max(0.40, face_detail.adaptive_denoise(detail_plan["face_px"]) - 0.08)
+                        # --- Pillar 1 + 4: Two-Pass Adaptive Face Inpainting ---
+                        pass_config = face_detail.two_pass_config(detail_plan["face_px"])
+                        retry_count = 0
+                        max_face_retries = 2
+                        similarity_threshold = 0.65
+                        best_refined_crop = None
+                        best_score = 0.0
 
-                        crop_workflow = engine.build_workflow(
-                            compiled_detail,
-                            mode=req["mode"],
-                            seed=req["seed"] + 99,
-                            steps=20,
-                            source_name=crop_name,
-                            source_size=detail_plan["work_size"],
-                            reference_names=(head_name,),
-                            mask_name=crop_mask_name,
-                            lora_name=lora_crop,
-                            lora_strength=lora_strength_crop,
-                            denoise=crop_denoise,
-                        )
+                        for retry in range(max_face_retries + 1):
+                            seed_offset = 99 + retry * 200
 
-                        crop_output = CLIENT.run(
-                            crop_workflow,
-                            cancel_event=cancel,
-                            on_submitted=lambda pid: update_job(job_id, prompt_id=pid),
-                        )
-                        if cancel.is_set():
-                            update_job(job_id, status="cancelled", phase="Cancelled", finished_at=time.time())
-                            return
-                        try:
-                            with Image.open(crop_output) as im:
-                                refined_crop = im.copy()
-                        finally:
+                            # --- Pass 1: Structure Reconstruction ---
+                            p1 = pass_config["pass_1"]
+                            update_job(job_id, phase=f"Face pass 1: structure{' (retry ' + str(retry) + ')' if retry else ''}")
+
+                            if use_bfs:
+                                compiled_detail_p1 = face_detail.prompt(prompt_text, use_bfs_head=True)
+                                lora_crop_p1 = BFS_HEAD_LORA
+                                lora_strength_p1 = p1["lora_strength"]
+                            else:
+                                detail_instr_p1 = face_detail.prompt(prompt_text, use_bfs_head=False)
+                                compiled_detail_p1 = identity_assist.compile_identity(detail_instr_p1, task="edit")
+                                lora_crop_p1 = None
+                                lora_strength_p1 = 0.0
+
+                            # Use the original crop for pass 1 (or re-crop on retry)
+                            if retry > 0:
+                                crop_work_retry = crop_img.resize(detail_plan["work_size"], Image.Resampling.LANCZOS)
+                                crop_dest_retry = COMFY_INPUT_DIR / f"{job_id}_crop_r{retry}.png"
+                                crop_work_retry.save(crop_dest_retry)
+                                uploaded.append(crop_dest_retry)
+                                crop_name_p1 = f"studio_uploads/{crop_dest_retry.name}"
+                            else:
+                                crop_name_p1 = crop_name
+
+                            p1_workflow = engine.build_workflow(
+                                compiled_detail_p1,
+                                mode=req["mode"],
+                                seed=req["seed"] + seed_offset,
+                                steps=p1["steps"],
+                                source_name=crop_name_p1,
+                                source_size=detail_plan["work_size"],
+                                reference_names=(head_name,),
+                                mask_name=crop_mask_name,
+                                lora_name=lora_crop_p1,
+                                lora_strength=lora_strength_p1,
+                                denoise=p1["denoise"],
+                            )
+
+                            p1_output = CLIENT.run(
+                                p1_workflow,
+                                cancel_event=cancel,
+                                on_submitted=lambda pid: update_job(job_id, prompt_id=pid),
+                            )
+                            if cancel.is_set():
+                                update_job(job_id, status="cancelled", phase="Cancelled", finished_at=time.time())
+                                return
                             try:
-                                crop_output.unlink(missing_ok=True)
+                                with Image.open(p1_output) as im:
+                                    p1_result = im.copy()
+                            finally:
+                                try:
+                                    p1_output.unlink(missing_ok=True)
+                                except Exception:
+                                    pass
+                                CLIENT.wipe_history()
+
+                            # --- Pass 2: Detail Sharpening ---
+                            p2 = pass_config["pass_2"]
+                            update_job(job_id, phase="Face pass 2: detail sharpening")
+
+                            # Save pass 1 result as input for pass 2
+                            p2_input_dest = COMFY_INPUT_DIR / f"{job_id}_p1_result.png"
+                            p1_result.save(p2_input_dest)
+                            uploaded.append(p2_input_dest)
+                            p2_input_name = f"studio_uploads/{p2_input_dest.name}"
+
+                            if use_bfs:
+                                # Pass 2 prompt emphasizes detail preservation, not reconstruction
+                                compiled_detail_p2 = face_detail.prompt(prompt_text, use_bfs_head=True)
+                                lora_crop_p2 = BFS_HEAD_LORA
+                                lora_strength_p2 = p2["lora_strength"]
+                            else:
+                                detail_instr_p2 = face_detail.prompt(prompt_text, use_bfs_head=False)
+                                compiled_detail_p2 = identity_assist.compile_identity(detail_instr_p2, task="edit")
+                                lora_crop_p2 = None
+                                lora_strength_p2 = 0.0
+
+                            p2_workflow = engine.build_workflow(
+                                compiled_detail_p2,
+                                mode=req["mode"],
+                                seed=req["seed"] + seed_offset + 50,
+                                steps=p2["steps"],
+                                source_name=p2_input_name,
+                                source_size=detail_plan["work_size"],
+                                reference_names=(head_name,),
+                                mask_name=crop_mask_name,
+                                lora_name=lora_crop_p2,
+                                lora_strength=lora_strength_p2,
+                                denoise=p2["denoise"],
+                            )
+
+                            p2_output = CLIENT.run(
+                                p2_workflow,
+                                cancel_event=cancel,
+                                on_submitted=lambda pid: update_job(job_id, prompt_id=pid),
+                            )
+                            if cancel.is_set():
+                                update_job(job_id, status="cancelled", phase="Cancelled", finished_at=time.time())
+                                return
+                            try:
+                                with Image.open(p2_output) as im:
+                                    refined_crop = im.copy()
+                            finally:
+                                try:
+                                    p2_output.unlink(missing_ok=True)
+                                except Exception:
+                                    pass
+                                CLIENT.wipe_history()
+
+                            # --- Pillar 5: Smart Face Restoration Blending ---
+                            update_job(job_id, phase="Smart face restoration")
+                            try:
+                                refined_crop = face_detail.smart_restore(
+                                    crop_work, refined_crop, detail_plan["face_px"]
+                                )
+                                restoration_used = "smart_blend"
                             except Exception:
-                                pass
-                            CLIENT.wipe_history()
+                                restoration_used = "none"
 
-                        restoration_used = "none"
-                        if face_restore.is_available():
-                            update_job(job_id, phase="Restoring micro-features")
+                            # --- Pillar 6: Similarity-Gated Retry ---
+                            # Composite and check similarity before accepting
+                            candidate = face_detail.composite(generated, refined_crop, detail_plan)
                             try:
-                                refined_crop = face_restore.restore_face(refined_crop, fidelity=0.8)
-                                restoration_used = "codeformer"
-                            except Exception as restore_err:
-                                logging.warning(f"Face restore failed, continuing with unenhanced crop: {restore_err}")
+                                with Image.open(req["identity_head_path"]) as head_check:
+                                    likeness_check = identity_assist.similarity(head_check, candidate)
+                                if likeness_check.get("status") == "measured":
+                                    current_score = max(
+                                        (f.get("cosine_similarity", 0) for f in likeness_check.get("faces", [])),
+                                        default=0,
+                                    )
+                                    if current_score > best_score:
+                                        best_score = current_score
+                                        best_refined_crop = refined_crop
+                                    if current_score >= similarity_threshold:
+                                        retry_count = retry
+                                        break
+                                    update_job(job_id, phase=f"Face retry {retry+1}: score {current_score:.2f} < {similarity_threshold}")
+                                else:
+                                    # Can't measure — accept this result
+                                    best_refined_crop = refined_crop
+                                    retry_count = retry
+                                    break
+                            except Exception:
+                                best_refined_crop = refined_crop
+                                retry_count = retry
+                                break
 
-                        generated = face_detail.composite(generated, refined_crop, detail_plan)
+                        # Use the best result from all attempts
+                        if best_refined_crop is None:
+                            best_refined_crop = refined_crop
+
+                        generated = face_detail.composite(generated, best_refined_crop, detail_plan)
                         metadata["face_detail"] = {
                             "applied": True,
                             "adapter": BFS_HEAD_LORA if use_bfs else "none",
                             "face_px": detail_plan["face_px"],
                             "crop_box": detail_plan["crop_box"],
-                            "denoise": crop_denoise,
+                            "pass_1_denoise": pass_config["pass_1"]["denoise"],
+                            "pass_2_denoise": pass_config["pass_2"]["denoise"],
                             "restoration": restoration_used,
                             "landmark_aligned": detail_plan.get("landmark_aligned", False),
                             "base_image_url": f"/outputs/{base_filename}",
+                            "two_pass": True,
+                            "detected_yaw": detected_yaw,
+                            "reference_angle_used": ref_angle_used,
+                            "retries": retry_count,
+                            "best_similarity": round(best_score, 4) if best_score > 0 else None,
                         }
                     else:
                         metadata["face_detail"] = {
@@ -1268,7 +1470,9 @@ def process_job(job_id, cancel):
             # SECURITY: Strip all metadata from generated image. Never write prompt into PNG info!
             clean_generated = generated.copy()
             clean_generated.info.clear()
-            clean_generated.save(Path(OUTPUT_DIR) / filename, format="PNG")
+            out_dir = Path(OUTPUT_DIR)
+            out_dir.mkdir(parents=True, exist_ok=True)
+            clean_generated.save(out_dir / filename, format="PNG")
 
             result = {"image_url": f"/outputs/{filename}", "source_url": req["source_url"],
                       "mask_url": req["mask_url"], "metadata": metadata}
@@ -1399,3 +1603,7 @@ def windows_system_stats():
 app.mount("/web", StaticFiles(directory=PROJECT_DIR / "web"), name="web")
 app.mount("/assets", StaticFiles(directory=PROJECT_DIR / "assets"), name="assets")
 app.mount("/outputs", StaticFiles(directory=OUTPUT_DIR), name="outputs")
+
+# Stories intentionally persist prompts/references in their own store. Ordinary jobs retain their privacy policy.
+import story_api
+STORY_ADAPTER = story_api.install(sys.modules[__name__])

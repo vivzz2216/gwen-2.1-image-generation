@@ -36,6 +36,21 @@ Four key improvements define this release:
 
 ## Quick Start
 
+### Persistent Visual Memory
+
+Open **Visual Memory** from the Studio header, or go to <http://127.0.0.1:7860/story>.
+Create a story, generate its opening, assign the detected faces to its characters once,
+then enter short next-action prompts. Characters, original references, locations and
+branching scene history persist in the local `stories/` folder across restarts.
+For automatic continuation, choose **Generation workflow → 5-scene sequence**,
+fill the five ordered boxes and click **Generate sequence**. The server waits for
+each saved image before starting the next, with progress, stop and explicit resume.
+Refreshing reconnects without duplicate generation. This queues work; it does not
+guarantee pose, emotion or facial accuracy.
+The existing local Qwen/ComfyUI pipeline performs generation. See
+[VISUAL_MEMORY.md](VISUAL_MEMORY.md) for usage, configuration, launch commands,
+the real test report and current identity/action/clothing limitations.
+
 ### Included Web Studio
 
 On Windows, run `start_studio.bat`, then open <http://localhost:7860>. It starts the

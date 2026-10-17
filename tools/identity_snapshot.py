@@ -9,7 +9,10 @@ import shutil
 ROOT = Path(__file__).resolve().parents[1]
 SCOPE = ['studio_service.py', 'qwen_engine.py', 'web/index.html', 'web/studio.js', 'web/layout.css',
          'identity_assist.py', 'test_identity_assist.py', 'test_qwen_core_ui.py', 'IDENTITY_ASSIST.md',
-         'tools/test_identity_live.py', 'requirements_identity.txt', 'dolphin_prompting.py', 'pose_assist.py']
+         'tools/test_identity_live.py', 'requirements_identity.txt', 'dolphin_prompting.py', 'pose_assist.py',
+         'visual_memory.py', 'continuity_engine.py', 'story_api.py', 'test_visual_memory.py',
+         'web/story.html', 'web/story.js', 'web/story.css', 'config/visual_memory.json', 'VISUAL_MEMORY.md', 'README.md',
+         'story_sequences.py', 'test_story_sequences.py', 'desktop_app.py', 'test_desktop_app.py']
 
 def sha(path):
     return hashlib.sha256(path.read_bytes()).hexdigest() if path.is_file() else None

@@ -109,6 +109,26 @@ class SecurityPrivacyTests(unittest.TestCase):
             raw_bytes = saved_file.read_bytes()
             self.assertNotIn(secret_prompt.encode("utf-8"), raw_bytes)
 
+    def test_frontend_zero_trace_lifecycle_on_close_and_startup(self):
+        studio_js = (service.PROJECT_DIR / "web" / "studio.js").read_text(encoding="utf-8")
+        story_js = (service.PROJECT_DIR / "web" / "story.js").read_text(encoding="utf-8")
+
+        # 1. Verify studio.js does not auto-poll or restore storedJob/storedBatch from localStorage on boot
+        self.assertNotIn('localStorage.getItem("qwen-studio-job")', studio_js)
+        self.assertNotIn('localStorage.getItem("qwen-studio-batch")', studio_js)
+
+        # 2. Verify studio.js listens to pagehide and beforeunload to clean session state
+        self.assertIn('"pagehide"', studio_js)
+        self.assertIn('"beforeunload"', studio_js)
+
+        # 3. Verify story.js does not auto-load the previous story from localStorage on boot
+        self.assertNotIn('loadStory(stored)', story_js)
+
+        # 4. Verify refresh button reloads entire tab and removes existing prompts and images
+        self.assertIn('$("refreshBackend").addEventListener("click"', studio_js)
+        self.assertIn('cleanSessionState()', studio_js)
+        self.assertIn('window.location.reload()', studio_js)
+
 
 if __name__ == "__main__":
     unittest.main()

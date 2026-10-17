@@ -153,20 +153,188 @@ def adaptive_denoise(face_px: tuple[int, int] | list[int]) -> float:
         return 0.52
 
 
-def prompt(user_prompt: str, use_bfs_head: bool = False) -> str:
-    """Compose the refinement instruction for the face detail inpainting pass."""
-    if use_bfs_head:
-        return (
-            "head_swap: start with <image1> as the base image, keeping its lighting, environment, and background. "
-            "remove the head from <image1> completely and replace it with the head from <image2>, strictly preserving "
-            "the hair, eye color, nose structure from <image2>. copy the direction of the eye, head rotation, "
-            "micro expressions from <image1>, high quality, sharp details, 4k"
-        )
-    return (
-        "Refine the face in <image1> using the identity references in <image2>. "
-        "Keep the exact head pose, facial expression, eye gaze, lighting and hairstyle unchanged. "
-        "Sharpen natural skin texture, eyes and facial features inside the masked area without altering the surrounding composition."
+# --- Pillar 2: Expression & Action-Aware Prompting ---
+
+# Maps scene actions to natural facial expression descriptions so the face
+# detail inpainting pass generates expressions that match the body's activity
+# rather than producing a stiff studio-portrait look.
+ACTION_EXPRESSIONS = {
+    "running": "determined expression, focused gaze forward, slight exertion",
+    "cycling": "focused concentration, wind-swept, forward gaze",
+    "surfing": "intense focus, water spray, squinting eyes",
+    "skydiving": "exhilarated expression, wind-distorted features, wide eyes",
+    "crying": "tears streaming, reddened eyes, emotional distress",
+    "laughing": "genuine smile, crow's feet, bright eyes",
+    "smiling": "warm genuine smile, relaxed cheeks, bright eyes",
+    "reading": "downward gaze, relaxed expression, gentle focus",
+    "fighting": "intense glare, clenched jaw, aggressive posture",
+    "sleeping": "closed eyes, relaxed face muscles, peaceful",
+    "yoga": "serene calm, meditative focus, relaxed features",
+    "climbing": "determined upward gaze, gritted teeth, focused effort",
+    "swimming": "wet features, focused eyes, exertion",
+    "singing": "open mouth expressively, engaged eyes, emotional",
+    "dancing": "joyful expression, dynamic energy, bright eyes",
+    "meditating": "serene closed eyes, peaceful expression, calm",
+    "skateboarding": "focused concentration, determined expression, balance",
+    "motorcycle": "focused forward gaze, wind-swept, alert eyes",
+}
+
+
+def _detect_action_expression(user_prompt: str) -> str:
+    """Extract action-matching expression from the user prompt."""
+    lower = user_prompt.lower()
+    for action, expression in ACTION_EXPRESSIONS.items():
+        if action in lower:
+            return expression
+    return ""
+
+
+# --- Pillar 1: Two-Pass Inpainting Config ---
+
+def two_pass_config(face_px: tuple[int, int] | list[int]) -> dict:
+    """Return separate configs for structural and detail inpainting passes.
+
+    Pass 1 (Structure): Higher denoise for reconstructing correct facial
+    geometry, pose alignment, and expression. Full LoRA strength.
+
+    Pass 2 (Detail): Low denoise for sharpening micro-features (irises,
+    pores, eyelashes) on the now-correct structure. Reduced LoRA strength
+    to avoid over-stylizing fine textures.
+    """
+    min_dim = min(face_px) if face_px else 64
+
+    if min_dim < 64:
+        p1_denoise, p2_denoise = 0.62, 0.32
+        p1_steps, p2_steps = 18, 12
+    elif min_dim < 160:
+        p1_denoise, p2_denoise = 0.55, 0.28
+        p1_steps, p2_steps = 16, 10
+    else:
+        p1_denoise, p2_denoise = 0.48, 0.24
+        p1_steps, p2_steps = 14, 8
+
+    return {
+        "pass_1": {
+            "denoise": p1_denoise,
+            "steps": p1_steps,
+            "lora_strength": 1.0,
+            "prompt_mode": "structure",
+        },
+        "pass_2": {
+            "denoise": p2_denoise,
+            "steps": p2_steps,
+            "lora_strength": 0.6,
+            "prompt_mode": "detail",
+        },
+    }
+
+
+# --- Pillar 4: Precision Denoise Scheduling ---
+
+def precision_denoise_schedule(face_px: tuple[int, int] | list[int],
+                               pass_type: str) -> dict:
+    """Return denoise + step configuration for a specific pass type.
+
+    Structure pass: moderate denoise for geometry reconstruction.
+    Detail pass: low denoise for identity-safe micro-detailing.
+    """
+    min_dim = min(face_px) if face_px else 64
+
+    if pass_type == "structure":
+        if min_dim < 64:
+            return {"denoise": 0.62, "steps": 18, "cfg": 1.0}
+        elif min_dim < 120:
+            return {"denoise": 0.55, "steps": 16, "cfg": 1.0}
+        else:
+            return {"denoise": 0.48, "steps": 14, "cfg": 1.0}
+
+    elif pass_type == "detail":
+        if min_dim < 64:
+            return {"denoise": 0.30, "steps": 12, "cfg": 1.0}
+        elif min_dim < 120:
+            return {"denoise": 0.26, "steps": 10, "cfg": 1.0}
+        else:
+            return {"denoise": 0.22, "steps": 8, "cfg": 1.0}
+
+    return {"denoise": 0.50, "steps": 15, "cfg": 1.0}
+
+
+# --- Pillar 5: Smart Face Restoration Blending ---
+
+def smart_restore(original_crop: Image.Image, refined_crop: Image.Image,
+                  face_px: tuple[int, int] | list[int]) -> Image.Image:
+    """Apply face restoration only when beneficial, with size-adaptive blending.
+
+    Strategy:
+    - Tiny faces (<80px): skip restoration — too small for meaningful benefit
+    - Medium faces (80-200px): blend at 40% — subtle application
+    - Large faces (>200px): blend at 60% — more texture benefit
+
+    CodeFormer fidelity is set to 0.9 (high identity retention) to avoid
+    the FFHQ-averaging effect that hurt benchmark scores at w=0.8.
+    """
+    import face_restore
+
+    min_dim = min(face_px) if face_px else 64
+
+    if min_dim < 80 or not face_restore.is_available():
+        return refined_crop
+
+    restored = face_restore.restore_face(refined_crop, fidelity=0.9)
+
+    # Size-adaptive blending ratio
+    blend_alpha = 0.4 if min_dim < 200 else 0.6
+
+    return Image.blend(
+        refined_crop.convert("RGB"),
+        restored.convert("RGB"),
+        blend_alpha,
     )
+
+
+def prompt(user_prompt: str, use_bfs_head: bool = False,
+           action_context: str = "") -> str:
+    """Compose the refinement instruction for the face detail inpainting pass.
+
+    Now with expression-aware prompting: detects actions from the user prompt
+    and injects matching facial expression guidance so the inpainted face
+    matches the scene's activity naturally.
+    """
+    # Auto-detect expression from user prompt, or use provided context
+    expression_guidance = action_context or _detect_action_expression(user_prompt)
+
+    if use_bfs_head:
+        base = (
+            "head_swap: start with <image1> as the base image, keeping its "
+            "lighting, environment, and background. "
+            "remove the head from <image1> completely and replace it with "
+            "the head from <image2>, strictly preserving "
+            "the hair, eye color, nose structure from <image2>."
+        )
+        if expression_guidance:
+            base += (
+                f" The face must show {expression_guidance}, matching the "
+                f"body's action naturally."
+            )
+        base += (
+            " copy the direction of the eye, head rotation, "
+            "micro expressions from <image1>, natural skin texture, high quality, sharp details, 4k"
+        )
+        return base
+
+    # Standard (non-BFS) path
+    base = (
+        "Refine the face in <image1> using the identity references in "
+        "<image2>. Keep the exact head pose, facial expression, eye gaze, "
+        "lighting and hairstyle unchanged."
+    )
+    if expression_guidance:
+        base += f" The expression should show {expression_guidance}."
+    base += (
+        " Sharpen natural skin texture, eyes and facial features inside "
+        "the masked area without altering the surrounding composition."
+    )
+    return base
 
 
 def composite(original: Image.Image, refined_work: Image.Image, detail_plan: dict) -> Image.Image:
@@ -183,3 +351,48 @@ def composite(original: Image.Image, refined_work: Image.Image, detail_plan: dic
     full_mask.paste(resized_mask, (crop_box[0], crop_box[1]))
 
     return composite_preserving(original, resized_work, full_mask, feather=0, crop_box=crop_box)
+
+
+def should_inpaint(face_px: tuple[int, int] | list[int],
+                   current_similarity: float | None = None) -> bool:
+    """Adaptive gating: determine if inpainting is required based on size & similarity."""
+    min_dim = min(face_px) if face_px else 0
+    if min_dim < 20:
+        return False
+    if min_dim < 120:
+        return True
+    if current_similarity is not None and current_similarity >= 0.75:
+        return False
+    return True
+
+
+def adaptive_codeformer_weight(face_px: tuple[int, int] | list[int]) -> float:
+    """Return size-tuned CodeFormer blending weight."""
+    min_dim = min(face_px) if face_px else 0
+    if min_dim < 64:
+        return 0.55
+    elif min_dim < 120:
+        return 0.30
+    return 0.0
+
+
+def harmonize_lighting(src_img: Image.Image, inp_img: Image.Image) -> Image.Image:
+    """Reinhard color / lighting harmonization from source crop to inpainted crop."""
+    import numpy as np
+
+    src_arr = np.array(src_img).astype(np.float32)
+    inp_arr = np.array(inp_img).astype(np.float32)
+
+    src_mean = src_arr.mean(axis=(0, 1))
+    src_std = np.maximum(src_arr.std(axis=(0, 1)), 1e-4)
+    inp_mean = inp_arr.mean(axis=(0, 1))
+    inp_std = np.maximum(inp_arr.std(axis=(0, 1)), 1e-4)
+
+    harmonized = (inp_arr - inp_mean) / inp_std * src_std + src_mean
+    clipped = np.clip(harmonized, 0, 255).astype(np.uint8)
+    return Image.fromarray(clipped, mode="RGB")
+
+
+detail_prompt = prompt
+
+

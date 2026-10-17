@@ -9,7 +9,7 @@
   <link rel="shortcut icon" href="/web/favicon.ico">
   <link rel="stylesheet" href="/web/studio.css?v=prompt-cleanup-v1">
   <link rel="stylesheet" href="/web/layout.css?v=three-workflows-1">
-  <script src="/web/studio.js?v=three-workflows-1" defer></script>
+  <script src="/web/studio.js?v=three-workflows-2" defer></script>
 </head>
 <body>
   <header class="app-header">
@@ -18,6 +18,7 @@
       <span>Qwen Image <strong>2.1</strong><small>Windows Desktop Studio</small></span>
     </a>
     <div class="header-tools">
+      <a href="/story" class="secondary">Visual Memory</a>
       <div id="hardwareStats" class="hardware-stats">
         <span id="gpuStatBadge" class="hw-badge" hidden><span class="hw-dot"></span><span id="gpuStatText">GPU</span></span>
         <span id="ramStatBadge" class="hw-badge hw-badge-secondary" hidden><span id="ramStatText">RAM</span></span>
@@ -70,6 +71,26 @@
               <a id="identityHeadOpen" class="text-button" target="_blank" rel="noopener" hidden>Open full-size head crop</a>
               <label class="check-row"><input id="identityReviewed" type="checkbox" disabled><span>I reviewed the selected person and head crop<small>Check likeness after generation. New angles and expressions regenerate facial pixels.</small></span></label>
               <label id="faceDetailRow" class="check-row"><input id="faceDetailEnabled" type="checkbox" checked><span>Sharpen small faces<small>Enhances facial clarity on full-body and small-head generations (+~30 s).</small></span></label>
+              <details id="multiAngleDetails" class="multi-angle-section">
+                <summary>Additional angles <span class="muted">optional, for profile/extreme poses</span></summary>
+                <p class="hint">Upload extra photos of the person. When poses turn sideways, the model automatically selects the best matching angle.</p>
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 8px;">
+                  <div>
+                    <label for="identityThreeQuarterInput" style="font-size: 11px; color: var(--muted, #888); display: block; margin-bottom: 4px;">3/4 View</label>
+                    <label id="identityThreeQuarterDrop" class="upload-zone compact" for="identityThreeQuarterInput">
+                      <span id="identityThreeQuarterLabel">Choose 3/4 photo</span>
+                    </label>
+                    <input id="identityThreeQuarterInput" class="sr-only" type="file" accept="image/png,image/jpeg,image/webp">
+                  </div>
+                  <div>
+                    <label for="identityProfileInput" style="font-size: 11px; color: var(--muted, #888); display: block; margin-bottom: 4px;">Profile View</label>
+                    <label id="identityProfileDrop" class="upload-zone compact" for="identityProfileInput">
+                      <span id="identityProfileLabel">Choose profile photo</span>
+                    </label>
+                    <input id="identityProfileInput" class="sr-only" type="file" accept="image/png,image/jpeg,image/webp">
+                  </div>
+                </div>
+              </details>
               <button id="identityContinue" type="button" class="secondary full-width" disabled>Write the action or scene</button>
               <p class="hint">Describe your changes below, choose a mode, then press Restyle image. Check facial likeness and anatomy in the result.</p>
             </div>

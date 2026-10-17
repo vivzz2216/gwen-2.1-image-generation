@@ -218,15 +218,51 @@ class JobTests(unittest.TestCase):
 
             job = service.get_job(job_id)
             self.assertEqual(job["status"], "succeeded")
-            # Should have called CLIENT.run twice: 1 initial generation, 1 face detail
-            self.assertEqual(len(calls), 2)
+            # Should have called CLIENT.run 3 times: 1 initial generation, 2 face detail passes (structure + detail)
+            self.assertEqual(len(calls), 3)
             metadata = job["result"]["metadata"]
             self.assertIn("face_detail", metadata)
             self.assertTrue(metadata["face_detail"]["applied"])
+            self.assertTrue(metadata["face_detail"].get("two_pass", False))
             base_file = Path(service.OUTPUT_DIR) / f"qwen_{job_id}_base.png"
             final_file = Path(service.OUTPUT_DIR) / f"qwen_{job_id}.png"
             self.assertTrue(base_file.exists())
             self.assertTrue(final_file.exists())
+            service.CANCEL_EVENTS.pop(job_id, None)
+
+    @patch.object(service.EXECUTOR, "submit")
+    @patch.object(service.identity_assist, "face_boxes")
+    @patch.object(service.identity_assist, "estimate_head_yaw", return_value="profile")
+    @patch.object(service.identity_assist, "similarity", return_value={"status": "measured", "faces": [{"cosine_similarity": 0.85}]})
+    def test_face_detail_selects_multi_angle_reference_based_on_yaw(self, similarity, estimate_yaw, face_boxes, submit):
+        calls = []
+        def mock_run(workflow, **kwargs):
+            p = Path(self.temp.name) / f"mock_{len(calls)}.png"
+            Image.new("RGB", (896, 672), (120, 140, 160)).save(p)
+            calls.append(workflow)
+            return p
+
+        with patch.object(service.CLIENT, "run", side_effect=mock_run):
+            face_boxes.return_value = [{'box': (400, 60, 50, 60), 'width': 50, 'height': 60, 'landmarks': [100.0, 100.0, 200.0, 100.0, 195.0, 140.0, 120.0, 180.0, 180.0, 180.0]}]
+            response = self.client.post("/api/jobs", data={
+                "task": "generate", "prompt": "Motorcycle riding profile view", "identity_enabled": "true",
+                "identity_reviewed": "true", "identity_box": "[0.2, 0.1, 0.5, 0.5]",
+                "face_detail": "true", "mode": "fast", "lora_enabled": "false"
+            }, files={
+                "identity_reference": ("identity.png", bitmap(), "image/png"),
+                "identity_reference_profile": ("profile.png", bitmap("green"), "image/png"),
+            })
+            self.assertEqual(response.status_code, 202)
+            job_id = response.json()["job_id"]
+            event = service.CANCEL_EVENTS[job_id]
+            service.process_job(job_id, event)
+
+            job = service.get_job(job_id)
+            self.assertEqual(job["status"], "succeeded")
+            metadata = job["result"]["metadata"]
+            self.assertIn("face_detail", metadata)
+            self.assertEqual(metadata["face_detail"].get("detected_yaw"), "profile")
+            self.assertEqual(metadata["face_detail"].get("reference_angle_used"), "profile")
             service.CANCEL_EVENTS.pop(job_id, None)
 
     @patch.object(service.EXECUTOR, "submit")
@@ -293,6 +329,16 @@ class JobTests(unittest.TestCase):
             self.assertFalse(metadata["face_detail"]["applied"])
             self.assertTrue(any("Face detail enhancement" in w for w in metadata["warnings"]))
             service.CANCEL_EVENTS.pop(job_id, None)
+
+    def test_connection_creates_missing_state_dir(self):
+        missing_dir = Path(self.temp.name) / "sub" / "missing_studio"
+        with patch.object(service, "STATE_DIR", missing_dir), \
+             patch.object(service, "DB_PATH", missing_dir / "jobs.sqlite3"):
+            self.assertFalse(missing_dir.exists())
+            with service.connection() as db:
+                db.execute("SELECT 1")
+            self.assertTrue(missing_dir.exists())
+            self.assertTrue((missing_dir / "jobs.sqlite3").exists())
 
 
 if __name__ == "__main__":

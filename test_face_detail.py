@@ -129,6 +129,100 @@ class FaceDetailTests(unittest.TestCase):
         # Large face (>160px)
         self.assertAlmostEqual(face_detail.adaptive_denoise((200, 220)), 0.52, places=2)
 
+    # --- Pillar 2: Expression-Aware Prompting ---
+
+    def test_prompt_with_action_context_bfs(self):
+        """BFS head prompt should include action-matching expression guidance."""
+        text = face_detail.prompt("skydiving from a plane", use_bfs_head=True, action_context="exhilarated expression, wind-distorted features, wide eyes")
+        self.assertIn("head_swap:", text)
+        self.assertIn("exhilarated", text)
+        self.assertIn("<image1>", text)
+        self.assertIn("<image2>", text)
+
+    def test_prompt_with_action_context_standard(self):
+        """Standard prompt should include action-matching expression guidance."""
+        text = face_detail.prompt("running in a park", use_bfs_head=False, action_context="determined expression, focused gaze forward")
+        self.assertIn("determined expression", text)
+        self.assertIn("<image1>", text)
+        self.assertIn("<image2>", text)
+
+    def test_prompt_detects_action_from_user_prompt(self):
+        """Prompt should auto-detect actions and inject expression guidance."""
+        text = face_detail.prompt("crying at a funeral", use_bfs_head=True)
+        self.assertIn("tears", text.lower())
+
+    def test_prompt_no_action_context_is_backward_compatible(self):
+        """Without action_context, prompt should be identical to old behavior."""
+        text = face_detail.prompt("some random prompt", use_bfs_head=True)
+        self.assertIn("head_swap:", text)
+        self.assertIn("strictly preserving", text)
+        # No expression guidance injected for unknown actions
+        self.assertNotIn("expression, matching", text)
+
+    # --- Pillar 1: Two-Pass Inpainting Config ---
+
+    def test_two_pass_config_returns_both_passes(self):
+        """Two-pass config should return structure and detail pass configurations."""
+        config = face_detail.two_pass_config((57, 72))
+        self.assertIn("pass_1", config)
+        self.assertIn("pass_2", config)
+        # Pass 1 (structure) should have higher denoise than pass 2 (detail)
+        self.assertGreater(config["pass_1"]["denoise"], config["pass_2"]["denoise"])
+        # Pass 2 detail denoise should be identity-safe (< 0.35)
+        self.assertLess(config["pass_2"]["denoise"], 0.35)
+        # Both should specify steps
+        self.assertGreater(config["pass_1"]["steps"], 0)
+        self.assertGreater(config["pass_2"]["steps"], 0)
+
+    def test_two_pass_config_adapts_to_face_size(self):
+        """Micro faces need more reconstruction freedom, large faces need less."""
+        micro = face_detail.two_pass_config((30, 40))
+        medium = face_detail.two_pass_config((100, 120))
+        large = face_detail.two_pass_config((200, 220))
+        # Structure denoise: micro > medium > large
+        self.assertGreater(micro["pass_1"]["denoise"], medium["pass_1"]["denoise"])
+        self.assertGreater(medium["pass_1"]["denoise"], large["pass_1"]["denoise"])
+        # Detail denoise follows same pattern
+        self.assertGreater(micro["pass_2"]["denoise"], medium["pass_2"]["denoise"])
+        self.assertGreater(medium["pass_2"]["denoise"], large["pass_2"]["denoise"])
+
+    def test_two_pass_config_lora_strengths(self):
+        """Pass 1 should use full LoRA strength, pass 2 should be reduced."""
+        config = face_detail.two_pass_config((80, 100))
+        self.assertGreaterEqual(config["pass_1"]["lora_strength"], 0.9)
+        self.assertLessEqual(config["pass_2"]["lora_strength"], 0.7)
+
+    # --- Pillar 5: Smart Restoration Blending ---
+
+    def test_smart_restore_skips_tiny_faces(self):
+        """Smart restore should skip restoration for tiny faces."""
+        crop = Image.new("RGB", (768, 768), (140, 120, 100))
+        result = face_detail.smart_restore(crop, crop, (40, 50))
+        # For tiny faces, output should be identical to input
+        self.assertEqual(result.size, crop.size)
+
+    def test_smart_restore_blends_for_medium_faces(self):
+        """Smart restore should apply partial blending for medium faces."""
+        crop = Image.new("RGB", (768, 768), (140, 120, 100))
+        result = face_detail.smart_restore(crop, crop, (120, 150))
+        self.assertEqual(result.size, crop.size)
+        self.assertEqual(result.mode, "RGB")
+
+    # --- Pillar 4: Precision Denoise Scheduling ---
+
+    def test_precision_denoise_schedule_structure_pass(self):
+        """Structure pass should have moderate denoise."""
+        sched = face_detail.precision_denoise_schedule((80, 100), "structure")
+        self.assertGreater(sched["denoise"], 0.45)
+        self.assertLess(sched["denoise"], 0.65)
+        self.assertGreater(sched["steps"], 10)
+
+    def test_precision_denoise_schedule_detail_pass(self):
+        """Detail pass should have low, identity-safe denoise."""
+        sched = face_detail.precision_denoise_schedule((80, 100), "detail")
+        self.assertLess(sched["denoise"], 0.35)
+        self.assertGreater(sched["steps"], 5)
+
 
 if __name__ == '__main__':
     unittest.main()

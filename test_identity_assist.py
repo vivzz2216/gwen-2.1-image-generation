@@ -126,4 +126,27 @@ class IdentityTests(unittest.TestCase):
         boxes = identity.face_boxes(image)
         self.assertIsInstance(boxes, list)
 
+    def test_estimate_head_yaw(self):
+        # Missing or empty landmarks fallback
+        self.assertEqual(identity.estimate_head_yaw({}), "front")
+        self.assertEqual(identity.estimate_head_yaw({"landmarks": [10.0, 20.0]}), "front")
+
+        # Frontal face: eyes at x=100 and x=200, nose at x=150 (midpoint)
+        # span = 100, mid = 150, offset = 0/100 = 0.0 -> front
+        self.assertEqual(identity.estimate_head_yaw({
+            "landmarks": [100.0, 100.0, 200.0, 100.0, 150.0, 140.0, 120.0, 180.0, 180.0, 180.0]
+        }), "front")
+
+        # Three-quarter face: eyes at x=100 and x=200, nose at x=175
+        # span = 100, mid = 150, offset = 25/100 = 0.25 -> three_quarter
+        self.assertEqual(identity.estimate_head_yaw({
+            "landmarks": [100.0, 100.0, 200.0, 100.0, 175.0, 140.0, 120.0, 180.0, 180.0, 180.0]
+        }), "three_quarter")
+
+        # Profile face: eyes at x=100 and x=200, nose at x=195
+        # span = 100, mid = 150, offset = 45/100 = 0.45 -> profile
+        self.assertEqual(identity.estimate_head_yaw({
+            "landmarks": [100.0, 100.0, 200.0, 100.0, 195.0, 140.0, 120.0, 180.0, 180.0, 180.0]
+        }), "profile")
+
 if __name__ == '__main__': unittest.main()

@@ -54,7 +54,14 @@ def rewrite_errors(original, rewritten):
     original_prose, rewritten_prose = prompt_intent.prose(original), prompt_intent.prose(rewritten)
     for action in ("stand", "sit", "kneel", "lean", "run", "jump"):
         pattern = r"stand(?:s|ing)?(?!\s+out\b)|stood" if action == "stand" else prompt_intent.ACTIONS[action]
-        if prompt_intent.contains(rewritten_prose, pattern) and not prompt_intent.contains(original_prose, pattern):
+        source_action, result_action = original_prose, rewritten_prose
+        if action == "run":
+            # Flowing tears are not a newly invented locomotion pose. Remove
+            # only this bounded phrase, not a person's separate running action.
+            tear_flow = r"\b(?:tears?|(?:wet\s+)?tear\s+(?:trails?|tracks?))\s+(?:(?:are|were)\s+)?(?:visibly\s+)?(?:run(?:s|ning)?|ran)\s+down\b"
+            source_action = re.sub(tear_flow, "tear flow down", source_action, flags=re.I)
+            result_action = re.sub(tear_flow, "tear flow down", result_action, flags=re.I)
+        if prompt_intent.contains(result_action, pattern) and not prompt_intent.contains(source_action, pattern):
             errors.append(f"Do not invent the {action} pose/action. Express the existing facts with neutral grammar instead.")
     return errors
 

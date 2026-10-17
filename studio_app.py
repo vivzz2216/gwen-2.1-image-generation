@@ -1,6 +1,8 @@
-"""Compatibility entry point for the Qwen Image 2.1 Studio."""
+import os
+import uvicorn
 from studio_service import app
 
 if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run("studio_app:app", host="127.0.0.1", port=7860, reload=False)
+    host = os.getenv("STUDIO_HOST", "0.0.0.0")
+    port = int(os.getenv("STUDIO_PORT", "7860"))
+    uvicorn.run("studio_app:app", host=host, port=port, reload=False)

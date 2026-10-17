@@ -21,6 +21,7 @@ ComfyUI_windows_portable/
 
 # Outputs & Generated Files (Zero-Trace / Privacy)
 outputs/
+stories/
 *.sqlite3
 *.log
 
@@ -39,3 +40,4 @@ Thumbs.db
 .idea/
 .vscode/
 *.swp
+.impeccable/

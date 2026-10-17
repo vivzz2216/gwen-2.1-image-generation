@@ -8,6 +8,7 @@ import time
 import urllib.request
 import webbrowser
 from pathlib import Path
+import network_info
 
 ROOT = Path(__file__).resolve().parent
 PORTABLE = ROOT / "ComfyUI_windows_portable"
@@ -81,8 +82,11 @@ def main():
         webbrowser.open("http://localhost:7860")
         return
 
-    print("[3/3] Starting Studio web server on http://localhost:7860...", flush=True)
-    print("Opening browser at http://localhost:7860. Keep this window open; Ctrl+C stops the Studio.", flush=True)
+    listen_host = os.getenv("STUDIO_HOST", "0.0.0.0")
+    print(f"[3/3] Starting Studio web server on port 7860 (listening on {listen_host})...", flush=True)
+    banner = network_info.format_connection_banner(7860)
+    print("\n" + banner + "\n", flush=True)
+    print("Opening browser on laptop at http://localhost:7860. Keep this window open; Ctrl+C stops the Studio.", flush=True)
 
     def open_browser():
         time.sleep(1.5)
@@ -92,7 +96,7 @@ def main():
             pass
 
     threading.Thread(target=open_browser, daemon=True).start()
-    subprocess.run([sys.executable, "-m", "uvicorn", "studio_app:app", "--host", "127.0.0.1", "--port", "7860"], cwd=ROOT)
+    subprocess.run([sys.executable, "-m", "uvicorn", "studio_app:app", "--host", listen_host, "--port", "7860"], cwd=ROOT)
 
 
 if __name__ == "__main__":

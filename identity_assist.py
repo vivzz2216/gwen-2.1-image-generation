@@ -109,6 +109,38 @@ def face_boxes(image):
         })
     return boxes
 
+def estimate_head_yaw(face_data: dict) -> str:
+    """Estimate head yaw from landmark positions.
+
+    Returns 'front', 'three_quarter', or 'profile' based on nose position
+    relative to the eye midpoint. Used for selecting the closest-matching
+    reference angle in multi-angle identity workflows.
+    """
+    landmarks = face_data.get("landmarks")
+    if not landmarks or len(landmarks) < 10:
+        return "front"
+
+    # Right eye (x), left eye (x), nose (x)
+    r_eye_x, l_eye_x = landmarks[0], landmarks[2]
+    nose_x = landmarks[4]
+
+    eye_mid_x = (r_eye_x + l_eye_x) / 2.0
+    eye_span = abs(l_eye_x - r_eye_x)
+
+    if eye_span < 1:
+        return "front"
+
+    nose_offset_ratio = abs(nose_x - eye_mid_x) / eye_span
+
+    if nose_offset_ratio < 0.15:
+        return "front"
+    elif nose_offset_ratio < 0.40:
+        return "three_quarter"
+    else:
+        return "profile"
+
+
+
 def similarity(reference_head, result):
     """Score all detected output faces; never label a biometric match as a pass."""
     if not capabilities()['cpu_similarity']:
